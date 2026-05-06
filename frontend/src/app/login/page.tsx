@@ -3,11 +3,14 @@
 /**
  * Login page.
  *
- * Provides email/password login form and a biometric login button
- * for users who have registered biometric credentials.
+ * Supports three authentication methods:
+ * 1. Email/password login
+ * 2. WebAuthn biometric login (desktop browser)
+ * 3. Native biometric login (mobile app WebView)
  */
 
 import { useAuth } from "@/contexts/auth-context";
+import { useBiometric } from "@/contexts/biometric-context";
 import { biometricApi } from "@/lib/api-client";
 import {
   authenticateWithBiometric,
@@ -17,23 +20,36 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { FormEvent, useEffect, useState } from "react";
 
-/** Storage key for persisted credential IDs per user. */
+/** Storage key for persisted WebAuthn credential IDs per user. */
 const CREDENTIAL_STORAGE_PREFIX = "biometrics_cred_ids_";
 
 export default function LoginPage() {
   const router = useRouter();
   const { login } = useAuth();
+  const {
+    isNativeApp: isNative,
+    canAuthenticate,
+    isRegistered,
+    loginWithBiometric,
+  } = useBiometric();
 
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
   const [isLoading, setIsLoading] = useState(false);
-  const [biometricAvailable, setBiometricAvailable] = useState(false);
+  const [webAuthnAvailable, setWebAuthnAvailable] = useState(false);
 
-  // Check biometric availability on mount
+  // Check WebAuthn availability on mount (for desktop browsers)
   useEffect(() => {
-    isPlatformAuthenticatorAvailable().then(setBiometricAvailable);
-  }, []);
+    if (!isNative) {
+      isPlatformAuthenticatorAvailable().then(setWebAuthnAvailable);
+    }
+  }, [isNative]);
+
+  // Determine if any biometric option should be shown
+  const showNativeBiometric = isNative && canAuthenticate && isRegistered;
+  const showWebAuthnBiometric = !isNative && webAuthnAvailable;
+  const showBiometric = showNativeBiometric || showWebAuthnBiometric;
 
   /**
    * Handles email/password form submission.
@@ -54,14 +70,44 @@ export default function LoginPage() {
   };
 
   /**
-   * Handles biometric authentication flow.
+   * Handles native biometric authentication flow.
+   *
+   * Uses the BiometricBridge to sign a server challenge with
+   * the device's hardware-backed key.
+   */
+  const handleNativeBiometricLogin = async () => {
+    setError("");
+    setIsLoading(true);
+
+    try {
+      const result = await loginWithBiometric();
+
+      if (!result.success || !result.accessToken) {
+        setError(result.error ?? "Biometric login failed");
+        return;
+      }
+
+      // Store the token from biometric verification
+      localStorage.setItem("biometrics_auth_token", result.accessToken);
+      // Note: userId/email would come from the verify response
+      // For now, redirect to dashboard
+      router.push("/dashboard");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Biometric login failed");
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  /**
+   * Handles WebAuthn biometric authentication flow (desktop browser).
    *
    * 1. Request challenge from server
    * 2. Prompt user for biometric (fingerprint/face)
    * 3. Send signed challenge to server for verification
    * 4. Receive JWT token on success
    */
-  const handleBiometricLogin = async () => {
+  const handleWebAuthnLogin = async () => {
     setError("");
     setIsLoading(true);
 
@@ -69,22 +115,23 @@ export default function LoginPage() {
       // Step 1: Get challenge from server
       const { challenge } = await biometricApi.generateChallenge();
 
-      // Step 2: Look up stored credential IDs for biometric login
-      // In a real app, you might look these up by email or another identifier
+      // Step 2: Look up stored credential IDs
       const storedCredIds = localStorage.getItem(
-        `${CREDENTIAL_STORAGE_PREFIX}${email}`
+        `${CREDENTIAL_STORAGE_PREFIX}${email}`,
       );
       if (!storedCredIds) {
-        setError("No biometric credentials found. Please login with password first.");
+        setError(
+          "No biometric credentials found. Please login with password first.",
+        );
         setIsLoading(false);
         return;
       }
       const credentialIds = JSON.parse(storedCredIds) as string[];
 
-      // Step 3: Authenticate with biometric (prompts user for fingerprint/face)
+      // Step 3: Authenticate with biometric
       const result = await authenticateWithBiometric(challenge, credentialIds);
 
-      // Step 4: Verify WebAuthn assertion with server
+      // Step 4: Verify with server
       const verifyResult = await biometricApi.verifySignature({
         credentialId: result.credentialId,
         signature: result.signature,
@@ -136,7 +183,10 @@ export default function LoginPage() {
         <form className="mt-8 space-y-6" onSubmit={handleSubmit}>
           <div className="rounded-md shadow-sm space-y-4">
             <div>
-              <label htmlFor="email" className="block text-sm font-medium text-gray-700">
+              <label
+                htmlFor="email"
+                className="block text-sm font-medium text-gray-700"
+              >
                 Email address
               </label>
               <input
@@ -152,7 +202,10 @@ export default function LoginPage() {
               />
             </div>
             <div>
-              <label htmlFor="password" className="block text-sm font-medium text-gray-700">
+              <label
+                htmlFor="password"
+                className="block text-sm font-medium text-gray-700"
+              >
                 Password
               </label>
               <input
@@ -180,26 +233,42 @@ export default function LoginPage() {
         </form>
 
         {/* Biometric Login Divider */}
-        {biometricAvailable && (
+        {showBiometric && (
           <>
             <div className="relative">
               <div className="absolute inset-0 flex items-center">
                 <div className="w-full border-t border-gray-300" />
               </div>
               <div className="relative flex justify-center text-sm">
-                <span className="px-2 bg-gray-50 text-gray-500">Or continue with</span>
+                <span className="px-2 bg-gray-50 text-gray-500">
+                  Or continue with
+                </span>
               </div>
             </div>
 
             <button
-              onClick={handleBiometricLogin}
+              onClick={
+                showNativeBiometric
+                  ? handleNativeBiometricLogin
+                  : handleWebAuthnLogin
+              }
               disabled={isLoading}
               className="w-full flex items-center justify-center gap-3 py-2 px-4 border border-gray-300 rounded-lg shadow-sm bg-white text-sm font-medium text-gray-700 hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
             >
-              <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
-                <path strokeLinecap="round" strokeLinejoin="round" d="M7.864 4.243A7.5 7.5 0 0 1 19.5 10.5c0 2.92-.556 5.709-1.568 8.268M5.742 6.364A7.465 7.465 0 0 0 4.5 10.5a48.667 48.667 0 0 0-1.474 8.25M12 18.75a48.22 48.22 0 0 0-4.272-8.25M12 18.75c1.886 0 3.69-.453 5.292-1.26M12 18.75a48.22 48.22 0 0 1 4.272-8.25M12 2.25c-2.376 0-4.558.67-6.428 1.826M12 2.25c2.376 0 4.558.67 6.428 1.826" />
+              <svg
+                className="w-5 h-5"
+                fill="none"
+                viewBox="0 0 24 24"
+                strokeWidth={1.5}
+                stroke="currentColor"
+              >
+                <path
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  d="M7.864 4.243A7.5 7.5 0 0 1 19.5 10.5c0 2.92-.556 5.709-1.568 8.268M5.742 6.364A7.465 7.465 0 0 0 4.5 10.5a48.667 48.667 0 0 0-1.474 8.25M12 18.75a48.22 48.22 0 0 0-4.272-8.25M12 18.75c1.886 0 3.69-.453 5.292-1.26M12 18.75a48.22 48.22 0 0 1 4.272-8.25M12 2.25c-2.376 0-4.558.67-6.428 1.826M12 2.25c2.376 0 4.558.67 6.428 1.826"
+                />
               </svg>
-              Biometric Login
+              {isNative ? "Biometric Login" : "WebAuthn Login"}
             </button>
           </>
         )}

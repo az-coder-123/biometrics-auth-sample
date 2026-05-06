@@ -1,4 +1,5 @@
 import { AuthProvider } from "@/contexts/auth-context";
+import { BiometricProvider } from "@/contexts/biometric-context";
 import type { Metadata } from "next";
 import "./globals.css";
 
@@ -6,7 +7,8 @@ import "./globals.css";
  * Root layout component.
  *
  * Wraps the entire application with global styles, metadata,
- * and the AuthProvider for authentication state management.
+ * the AuthProvider for authentication state management, and
+ * the BiometricProvider for native biometric support.
  */
 
 export const metadata: Metadata = {
@@ -22,7 +24,9 @@ export default function RootLayout({
   return (
     <html lang="en">
       <body className="antialiased">
-        <AuthProvider>{children}</AuthProvider>
+        <AuthProvider>
+          <BiometricProvider>{children}</BiometricProvider>
+        </AuthProvider>
       </body>
     </html>
   );

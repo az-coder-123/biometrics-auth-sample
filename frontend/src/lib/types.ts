@@ -81,13 +81,23 @@ export interface ChallengeResponse {
   challenge: string;
 }
 
-/** Biometric verification request payload (WebAuthn assertion). */
+/** Biometric verification request payload.
+ *
+ * Supports two authentication methods:
+ * 1. **Native biometric** — signature + publicKey + payload
+ * 2. **WebAuthn** — credentialId + signature + authenticatorData + clientDataJSON + payload
+ */
 export interface BiometricVerifyRequest {
-  credentialId: string;
   signature: string;
-  authenticatorData: string;
-  clientDataJSON: string;
   payload: string;
+  /** Public key for native biometric verification. */
+  publicKey?: string;
+  /** Credential ID for WebAuthn verification. */
+  credentialId?: string;
+  /** WebAuthn authenticator data (base64url). */
+  authenticatorData?: string;
+  /** WebAuthn client data JSON (base64url). */
+  clientDataJSON?: string;
 }
 
 /** Biometric verification response from the backend. */
