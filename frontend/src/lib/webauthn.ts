@@ -23,6 +23,8 @@ export interface BiometricRegistrationResult {
 
 /** Result of a biometric authentication (signing) operation. */
 export interface BiometricAuthResult {
+  /** Base64url-encoded credential ID of the credential used. */
+  credentialId: string;
   /** Base64url-encoded signature. */
   signature: string;
   /** Base64url-encoded authenticator data. */
@@ -218,6 +220,7 @@ export async function authenticateWithBiometric(
   const response = assertion.response as AuthenticatorAssertionResponse;
 
   return {
+    credentialId: bufferToBase64url(assertion.rawId),
     signature: bufferToBase64url(response.signature),
     authenticatorData: bufferToBase64url(response.authenticatorData),
     clientDataJSON: bufferToBase64url(response.clientDataJSON),

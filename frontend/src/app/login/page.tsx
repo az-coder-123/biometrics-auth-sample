@@ -81,14 +81,15 @@ export default function LoginPage() {
       }
       const credentialIds = JSON.parse(storedCredIds) as string[];
 
-      // Step 3: Authenticate with biometric
+      // Step 3: Authenticate with biometric (prompts user for fingerprint/face)
       const result = await authenticateWithBiometric(challenge, credentialIds);
 
-      // Step 4: Verify signature with server
-      // Note: Using the clientDataJSON as the payload for server verification
+      // Step 4: Verify WebAuthn assertion with server
       const verifyResult = await biometricApi.verifySignature({
+        credentialId: result.credentialId,
         signature: result.signature,
-        publicKey: "", // Server will look up by the credential
+        authenticatorData: result.authenticatorData,
+        clientDataJSON: result.clientDataJSON,
         payload: challenge,
       });
 

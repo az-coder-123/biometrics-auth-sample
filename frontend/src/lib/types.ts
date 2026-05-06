@@ -81,10 +81,12 @@ export interface ChallengeResponse {
   challenge: string;
 }
 
-/** Biometric verification request payload. */
+/** Biometric verification request payload (WebAuthn assertion). */
 export interface BiometricVerifyRequest {
+  credentialId: string;
   signature: string;
-  publicKey: string;
+  authenticatorData: string;
+  clientDataJSON: string;
   payload: string;
 }
 

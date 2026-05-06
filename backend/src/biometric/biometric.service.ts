@@ -1,23 +1,22 @@
 import { BadRequestException, Injectable, Logger, NotFoundException, UnauthorizedException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { InjectModel } from '@nestjs/mongoose';
+import { createHash, createPublicKey, randomBytes, verify } from 'crypto';
 import { Model } from 'mongoose';
-import { v4 as uuidv4 } from 'uuid';
-import { createPublicKey, verify, constants } from 'crypto';
+import { AuthService } from '../auth/auth.service';
+import { BiometricRegisterDto } from './dto/biometric-register.dto';
+import { BiometricVerifyDto } from './dto/biometric-verify.dto';
 import {
   BiometricCredential,
   BiometricCredentialDocument,
 } from './schemas/biometric-credential.schema';
 import { Challenge, ChallengeDocument } from './schemas/challenge.schema';
-import { BiometricRegisterDto } from './dto/biometric-register.dto';
-import { BiometricVerifyDto } from './dto/biometric-verify.dto';
-import { AuthService } from '../auth/auth.service';
 
 /**
  * Biometric authentication service.
  *
  * Handles biometric credential registration, challenge generation,
- * ECDSA signature verification, and credential management.
+ * WebAuthn assertion verification, and credential management.
  *
  * Follows Single Responsibility Principle by focusing solely on
  * biometric authentication logic.
@@ -92,12 +91,14 @@ export class BiometricService {
    * @returns A unique challenge nonce string
    */
   async generateChallenge(): Promise<{ challenge: string }> {
-    const nonce = uuidv4();
+    // Generate a cryptographically random challenge as base64url-encoded string.
+    // WebAuthn requires the challenge to be a byte array passed via base64url encoding.
+    // Using crypto.randomBytes ensures proper entropy for the challenge nonce.
+    const nonce = randomBytes(32).toString('base64url');
     const expiresAt = new Date(
       Date.now() + this.challengeExpiresInSeconds * 1000,
     );
 
-    // Store challenge (publicKey will be set during verification)
     await this.challengeModel.create({
       nonce,
       publicKey: 'pending',
@@ -110,23 +111,24 @@ export class BiometricService {
   }
 
   /**
-   * Verifies a biometric signature against the stored public key.
+   * Verifies a WebAuthn assertion signature against the stored public key.
    *
-   * This is the core of the biometric authentication flow:
-   * 1. Validates the challenge exists and hasn't expired
-   * 2. Finds the credential by public key
-   * 3. Verifies the ECDSA signature using the public key
-   * 4. Marks the challenge as used
-   * 5. Issues a JWT access token
+   * WebAuthn assertion verification flow:
+   * 1. Validate the challenge exists and hasn't expired
+   * 2. Find the credential by credentialId (stored as keyAlias)
+   * 3. Validate clientDataJSON contains the correct challenge and type
+   * 4. Reconstruct the signed data: authenticatorData + SHA-256(clientDataJSON)
+   * 5. Verify the ECDSA signature using the stored public key
+   * 6. Mark the challenge as used and issue a JWT token
    *
-   * @param verifyDto - Contains signature, publicKey, and payload (challenge nonce)
+   * @param verifyDto - Contains credentialId, signature, authenticatorData, clientDataJSON, payload
    * @returns JWT access token and user info
    * @throws UnauthorizedException if verification fails
    */
   async verifySignature(
     verifyDto: BiometricVerifyDto,
   ): Promise<{ accessToken: string; userId: string; email: string }> {
-    const { signature, publicKey, payload } = verifyDto;
+    const { credentialId, signature, authenticatorData, clientDataJSON, payload } = verifyDto;
 
     // Step 1: Validate the challenge
     const challenge = await this.challengeModel.findOne({ nonce: payload }).exec();
@@ -145,33 +147,37 @@ export class BiometricService {
       throw new UnauthorizedException('Challenge has expired');
     }
 
-    // Step 2: Find the credential by public key
+    // Step 2: Find the credential by keyAlias (credentialId)
     const credential = await this.credentialModel
-      .findOne({ publicKey, isActive: true })
+      .findOne({ keyAlias: credentialId, isActive: true })
       .exec();
 
     if (!credential) {
-      this.logger.warn(`No active credential found for public key`);
+      this.logger.warn(`No active credential found for credentialId: ${credentialId}`);
       throw new UnauthorizedException('Biometric credential not found');
     }
 
-    // Step 3: Verify the ECDSA signature
-    const isSignatureValid = this.verifyEcdsaSignature(
-      payload,
+    // Step 3: Validate clientDataJSON contains the correct challenge
+    this.validateClientData(clientDataJSON, payload);
+
+    // Step 4: Reconstruct signed data and verify the signature
+    const isSignatureValid = this.verifyWebAuthnAssertion(
+      authenticatorData,
+      clientDataJSON,
       signature,
-      publicKey,
+      credential.publicKey,
     );
 
     if (!isSignatureValid) {
-      this.logger.warn(`Invalid ECDSA signature for user: ${credential.userId}`);
+      this.logger.warn(`Invalid WebAuthn assertion for user: ${credential.userId}`);
       throw new UnauthorizedException('Invalid biometric signature');
     }
 
-    // Step 4: Mark challenge as used
+    // Step 5: Mark challenge as used
     challenge.isUsed = true;
     await challenge.save();
 
-    // Step 5: Generate JWT token
+    // Step 6: Generate JWT token
     const userId = credential.userId.toString();
     const user = await this.authService.findUserById(userId);
 
@@ -232,46 +238,217 @@ export class BiometricService {
   }
 
   /**
-   * Verifies an ECDSA signature using the provided public key.
+   * Validates the WebAuthn clientDataJSON.
    *
-   * The public key is expected in PEM format. The signature is expected
-   * in Base64 encoding. Verification uses SHA-256 as the hash algorithm.
+   * Ensures the challenge in the client data matches the expected challenge
+   * and that the type is "webauthn.get" (authentication).
    *
-   * @param data - The original data that was signed (challenge nonce)
-   * @param signature - The Base64-encoded ECDSA signature
-   * @param publicKeyPem - The ECDSA public key in PEM format
-   * @returns True if the signature is valid, false otherwise
+   * @param clientDataJSON - Base64url-encoded client data from the assertion
+   * @param expectedChallenge - The challenge nonce that was sent to the client
+   * @throws UnauthorizedException if validation fails
    */
-  private verifyEcdsaSignature(
-    data: string,
-    signature: string,
-    publicKeyPem: string,
+  private validateClientData(clientDataJSON: string, expectedChallenge: string): void {
+    const decoded = Buffer.from(clientDataJSON, 'base64').toString('utf-8');
+
+    let clientData: Record<string, unknown>;
+    try {
+      clientData = JSON.parse(decoded);
+    } catch {
+      this.logger.warn('Failed to parse clientDataJSON');
+      throw new UnauthorizedException('Invalid client data format');
+    }
+
+    // Verify the type is "webauthn.get" (authentication assertion)
+    if (clientData.type !== 'webauthn.get') {
+      this.logger.warn(`Invalid client data type: ${clientData.type}`);
+      throw new UnauthorizedException('Invalid authentication type');
+    }
+
+    // Verify the challenge matches.
+    // The server generates challenges as base64url-encoded random bytes.
+    // The client passes this directly to WebAuthn, which base64url-encodes
+    // the ArrayBuffer back — so clientData.challenge should equal our stored nonce.
+    const receivedChallenge = clientData.challenge as string;
+    if (!receivedChallenge) {
+      this.logger.warn('Missing challenge in client data');
+      throw new UnauthorizedException('Missing challenge in client data');
+    }
+
+    if (receivedChallenge !== expectedChallenge) {
+      this.logger.warn('Challenge mismatch in client data');
+      throw new UnauthorizedException('Challenge verification failed');
+    }
+  }
+
+  /**
+   * Verifies a WebAuthn assertion signature.
+   *
+   * The WebAuthn spec defines the signed data as:
+   *   authenticatorData || SHA-256(clientDataJSON)
+   *
+   * The signature is an ECDSA signature over this concatenated data,
+   * using the credential's private key. We verify against the stored public key.
+   *
+   * @param authenticatorDataBase64url - Base64url-encoded authenticator data
+   * @param clientDataJSONBase64url - Base64url-encoded client data JSON
+   * @param signatureBase64url - Base64url-encoded ECDSA signature
+   * @param storedPublicKey - Base64url-encoded COSE public key (from registration)
+   * @returns True if the signature is valid
+   */
+  private verifyWebAuthnAssertion(
+    authenticatorDataBase64url: string,
+    clientDataJSONBase64url: string,
+    signatureBase64url: string,
+    storedPublicKey: string,
   ): boolean {
     try {
+      // Convert the stored COSE public key to PEM format
+      const pem = this.coseEc2ToPem(storedPublicKey);
+
+      // Reconstruct the signed data: authenticatorData || SHA-256(clientDataJSON)
+      const authenticatorData = Buffer.from(
+        this.base64urlToBuffer(authenticatorDataBase64url),
+      );
+      const clientDataJSON = Buffer.from(
+        this.base64urlToBuffer(clientDataJSONBase64url),
+      );
+      const clientDataHash = createHash('sha256').update(clientDataJSON).digest();
+      const signedData = Buffer.concat([authenticatorData, clientDataHash]);
+
+      // Convert signature from base64url to buffer
+      const signatureBuffer = Buffer.from(
+        this.base64urlToBuffer(signatureBase64url),
+      );
+
+      // Verify using Node.js crypto
       const publicKey = createPublicKey({
-        key: publicKeyPem,
+        key: pem,
         format: 'pem',
         type: 'spki',
       });
 
-      const signatureBuffer = Buffer.from(signature, 'base64');
-      const dataBuffer = Buffer.from(data, 'utf-8');
-
       return verify(
         null,
-        dataBuffer,
+        signedData,
         {
           key: publicKey,
-          padding: undefined,
           dsaEncoding: 'der',
         },
         signatureBuffer,
       );
     } catch (error) {
       this.logger.error(
-        `ECDSA signature verification failed: ${error instanceof Error ? error.message : 'Unknown error'}`,
+        `WebAuthn assertion verification failed: ${error instanceof Error ? error.message : 'Unknown error'}`,
       );
       return false;
     }
+  }
+
+  /**
+   * Converts a COSE EC2 (P-256) public key to PEM format.
+   *
+   * WebAuthn's `getPublicKey()` returns a COSE_Key structure in CBOR encoding.
+   * This method extracts the x and y coordinates and constructs a proper
+   * SubjectPublicKeyInfo (SPKI) in PEM format for use with Node.js crypto.
+   *
+   * COSE_Key structure for EC2 P-256:
+   *   { 1: 2, 3: -7, -1: 1, -2: xBytes, -3: yBytes }
+   *
+   * @param coseKeyBase64url - Base64url-encoded COSE_Key
+   * @returns PEM-formatted public key string
+   * @throws Error if the key cannot be parsed
+   */
+  private coseEc2ToPem(coseKeyBase64url: string): string {
+    const coseBytes = Buffer.from(this.base64urlToBuffer(coseKeyBase64url));
+
+    // Check if already SPKI/PEM format (starts with -----BEGIN)
+    if (coseKeyBase64url.startsWith('-----BEGIN')) {
+      return coseKeyBase64url;
+    }
+
+    // Extract x and y coordinates from COSE_Key CBOR encoding
+    // CBOR byte string for 32 bytes: 0x58 0x20
+    // COSE key -2 (0x21) = x coordinate, -3 (0x22) = y coordinate
+    let x: Buffer | undefined;
+    let y: Buffer | undefined;
+
+    for (let i = 0; i < coseBytes.length - 3; i++) {
+      // Look for byte string pattern: key tag + 0x58 0x20 + 32 bytes
+      if (coseBytes[i] === 0x21 && coseBytes[i + 1] === 0x58 && coseBytes[i + 2] === 0x20) {
+        x = coseBytes.subarray(i + 3, i + 3 + 32);
+      }
+      if (coseBytes[i] === 0x22 && coseBytes[i + 1] === 0x58 && coseBytes[i + 2] === 0x20) {
+        y = coseBytes.subarray(i + 3, i + 3 + 32);
+      }
+    }
+
+    if (!x || !y || x.length !== 32 || y.length !== 32) {
+      this.logger.warn('Failed to parse COSE EC2 key, attempting SPKI fallback');
+      // Fallback: try treating as raw SPKI DER
+      return this.derToPem(coseBytes);
+    }
+
+    // Construct uncompressed EC point: 0x04 || x || y
+    const uncompressedPoint = Buffer.concat([
+      Buffer.from([0x04]),
+      x,
+      y,
+    ]);
+
+    // Construct SubjectPublicKeyInfo ASN.1 DER structure
+    // SEQUENCE { SEQUENCE { OID ecPublicKey, OID prime256v1 }, BIT STRING { point } }
+    const ecOid = Buffer.from([
+      0x06, 0x07, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x02, 0x01, // OID 1.2.840.10045.2.1 (ecPublicKey)
+    ]);
+    const p256Oid = Buffer.from([
+      0x06, 0x08, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x03, 0x01, 0x07, // OID 1.2.840.10045.3.1.7 (P-256)
+    ]);
+
+    const algorithmSeqContent = Buffer.concat([ecOid, p256Oid]);
+    const algorithmSeq = Buffer.concat([
+      Buffer.from([0x30, algorithmSeqContent.length]),
+      algorithmSeqContent,
+    ]);
+
+    const bitStringContent = Buffer.concat([
+      Buffer.from([0x00]), // no unused bits
+      uncompressedPoint,
+    ]);
+    const bitString = Buffer.concat([
+      Buffer.from([0x03, bitStringContent.length]),
+      bitStringContent,
+    ]);
+
+    const spkiContent = Buffer.concat([algorithmSeq, bitString]);
+    const spki = Buffer.concat([
+      Buffer.from([0x30, spkiContent.length]),
+      spkiContent,
+    ]);
+
+    return this.derToPem(spki);
+  }
+
+  /**
+   * Converts a DER-encoded SubjectPublicKeyInfo to PEM format.
+   *
+   * @param derBuffer - DER-encoded public key bytes
+   * @returns PEM-formatted public key string
+   */
+  private derToPem(derBuffer: Buffer): string {
+    const base64 = derBuffer.toString('base64');
+    const lines = base64.match(/.{1,64}/g) || [];
+    return `-----BEGIN PUBLIC KEY-----\n${lines.join('\n')}\n-----END PUBLIC KEY-----`;
+  }
+
+  /**
+   * Decodes a Base64url string to a hex-encoded buffer representation.
+   *
+   * @param base64url - Base64url-encoded string
+   * @returns Buffer from the decoded bytes
+   */
+  private base64urlToBuffer(base64url: string): Buffer {
+    const base64 = base64url.replace(/-/g, '+').replace(/_/g, '/');
+    const padded = base64 + '='.repeat((4 - (base64.length % 4)) % 4);
+    return Buffer.from(padded, 'base64');
   }
 }
