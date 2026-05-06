@@ -10,12 +10,12 @@
 import { useAuth } from "@/contexts/auth-context";
 import { biometricApi } from "@/lib/api-client";
 import {
-    authenticateWithBiometric,
-    isPlatformAuthenticatorAvailable,
+  authenticateWithBiometric,
+  isPlatformAuthenticatorAvailable,
 } from "@/lib/webauthn";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { FormEvent, useState } from "react";
+import { FormEvent, useEffect, useState } from "react";
 
 /** Storage key for persisted credential IDs per user. */
 const CREDENTIAL_STORAGE_PREFIX = "biometrics_cred_ids_";
@@ -31,9 +31,9 @@ export default function LoginPage() {
   const [biometricAvailable, setBiometricAvailable] = useState(false);
 
   // Check biometric availability on mount
-  useState(() => {
+  useEffect(() => {
     isPlatformAuthenticatorAvailable().then(setBiometricAvailable);
-  });
+  }, []);
 
   /**
    * Handles email/password form submission.

@@ -120,7 +120,7 @@ export default function DashboardPage() {
         throw new Error("Not authenticated");
       }
 
-      await biometricApi.unregisterCredential(accessToken);
+      await biometricApi.unregisterCredential(accessToken, undefined);
 
       // Remove stored credential IDs
       if (email) {

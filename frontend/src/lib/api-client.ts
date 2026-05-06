@@ -6,23 +6,35 @@
  */
 
 import type {
-    ApiResponse,
-    BiometricRegisterRequest,
-    BiometricRegisterResponse,
-    BiometricUnregisterResponse,
-    BiometricVerifyRequest,
-    BiometricVerifyResponse,
-    ChallengeResponse,
-    LoginRequest,
-    LoginResponse,
-    ProfileResponse,
-    RegisterRequest,
-    RegisterResponse,
+  ApiResponse,
+  BiometricRegisterRequest,
+  BiometricRegisterResponse,
+  BiometricUnregisterResponse,
+  BiometricVerifyRequest,
+  BiometricVerifyResponse,
+  ChallengeResponse,
+  LoginRequest,
+  LoginResponse,
+  ProfileResponse,
+  RegisterRequest,
+  RegisterResponse,
 } from "./types";
 
-/** Base API URL — configurable via environment variable. */
-const API_BASE_URL =
-  process.env.NEXT_PUBLIC_API_URL || "http://localhost:3000/api";
+/**
+ * Base API URL — must be configured via the NEXT_PUBLIC_API_URL environment variable.
+ *
+ * @throws Error if the environment variable is not set
+ */
+const API_BASE_URL = (() => {
+  const url = process.env.NEXT_PUBLIC_API_URL;
+  if (!url) {
+    throw new Error(
+      "Missing required environment variable: NEXT_PUBLIC_API_URL. " +
+      "Please define it in your .env.local file (e.g., NEXT_PUBLIC_API_URL=http://localhost:3000/api)."
+    );
+  }
+  return url;
+})();
 
 // ---------------------------------------------------------------------------
 // Internal Helpers
