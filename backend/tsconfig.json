@@ -1,0 +1,36 @@
+{
+  "compilerOptions": {
+    "module": "commonjs",
+    "declaration": true,
+    "removeComments": true,
+    "emitDecoratorMetadata": true,
+    "experimentalDecorators": true,
+    "allowSyntheticDefaultImports": true,
+    "target": "ES2021",
+    "sourceMap": true,
+    "outDir": "./dist",
+    "baseUrl": "./",
+    "incremental": true,
+    "skipLibCheck": true,
+    "strictNullChecks": true,
+    "noImplicitAny": true,
+    "strictBindCallApply": true,
+    "forceConsistentCasingInFileNames": true,
+    "noFallthroughCasesInSwitch": true,
+    "paths": {
+      "@/*": ["src/*"]
+    }
+  }
+}
+</task_progress>
+- [x] Read and analyze the BIOMETRIC_WEB_INTEGRATION_GUIDE.md document
+- [x] Design NestJS backend architecture based on Registration & Authentication flows
+- [ ] Initialize NestJS project with required dependencies
+- [ ] Create MongoDB schemas/models (User, BiometricCredential, Challenge)
+- [ ] Implement Auth module (registration, login, token management)
+- [ ] Implement Biometric module (registration, authentication, challenge, unregister)
+- [ ] Implement common utilities (guards, interceptors, exception filters, decorators)
+- [ ] Create configuration module (environment, MongoDB connection)
+- [ ] Add API documentation and README
+- [ ] Build and verify the project compiles without errors
+</write_to_file>
