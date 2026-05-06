@@ -3,6 +3,11 @@
 This document describes how the **Next.js frontend** and **NestJS backend**
 communicate during the authentication and biometric enrollment flows.
 
+> **Note:** The frontend supports two biometric modes:
+> - **WebAuthn** — when running in a desktop browser with platform authenticator
+> - **Native Biometric** — when running inside the Flutter mobile app WebView
+>   (see [Mobile ↔ Frontend Integration](./MOBILE_FRONTEND_INTEGRATION.md))
+
 ---
 
 ## Table of Contents
@@ -21,35 +26,57 @@ communicate during the authentication and biometric enrollment flows.
 ## Architecture Overview
 
 ```
-┌──────────────────────┐       HTTP/REST         ┌──────────────────────┐
-│                      │ ──────────────────────► │                      │
-│   Next.js Frontend   │    JSON over HTTP       │   NestJS Backend     │
-│   (Port 3001)        │ ◄────────────────────── │   (Port 3000)        │
-│                      │                         │                      │
-│  ┌────────────────┐  │                         │  ┌────────────────┐  │
-│  │ WebAuthn API   │  │                         │  │ Auth Module    │  │
-│  │ (Browser)      │  │                         │  │ Biometric Mod. │  │
-│  └────────────────┘  │                         │  │ JWT Guard      │  │
-│  ┌────────────────┐  │                         │  └────────────────┘  │
-│  │ Auth Context   │  │                         │  ┌────────────────┐  │
-│  │ (React State)  │  │                         │  │ MongoDB        │  │
-│  └────────────────┘  │                         │  │ (Collections)  │  │
-│  ┌────────────────┐  │                         │  └────────────────┘  │
-│  │ API Client     │  │                         │                      │
-│  │ (fetch wrapper)│  │                         │                      │
-│  └────────────────┘  │                         │                      │
-└──────────────────────┘                         └──────────────────────┘
+┌──────────────────────────────────────────────────────────────────┐
+│                        Frontend (Next.js)                        │
+│                                                                  │
+│  ┌─────────────────────────────────────────────────────────────┐ │
+│  │                    Detection Layer                          │ │
+│  │  isNativeApp()? ──┬── YES → BiometricBridge (JS Bridge)     │ │
+│  │                   └── NO  → WebAuthn (Browser API)          │ │
+│  └─────────────────────────────────────────────────────────────┘ │
+│                                                                  │
+│  ┌──────────────────┐  ┌────────────────┐  ┌────────────────┐    │
+│  │ Auth Context     │  │ BiometricCtx   │  │ API Client     │    │
+│  │ (React State)    │  │ (React State)  │  │ (fetch wrapper)│    │
+│  └──────────────────┘  └────────────────┘  └────────────────┘    │
+└──────────────────────────┬───────────────────────────────────────┘
+                           │
+           ┌───────────────┼───────────────┐
+           │ JS Bridge     │               │ HTTP/REST
+           │ (native only) │               │
+           ▼               │               ▼
+┌──────────────────────┐   │   ┌──────────────────────────────────┐
+│  Mobile App (Flutter)│   │   │  Backend (NestJS)                │
+│  JsBridgeService     │   │   │                                  │
+│  BiometricService    │   │   │  ┌────────────────┐              │
+│  (Android Keystore / │   │   │  │ Auth Module    │              │
+│   iOS Keychain)      │   │   │  │ Biometric Mod. │              │
+└──────────────────────┘   │   │  │ JWT Guard      │              │
+                           │   │  └────────────────┘              │
+                           │   │  ┌────────────────┐              │
+                           │   │  │ MongoDB        │              │
+                           │   │  │ (Collections)  │              │
+                           │   │  └────────────────┘              │
+                           │   └──────────────────────────────────┘
+                           │
+                   ┌───────┴────────┐
+                   │ WebAuthn API   │
+                   │ (Browser)      │
+                   │ TPM / Secure   │
+                   │ Enclave        │
+                   └────────────────┘
 ```
 
 ### Technology Stack
 
-| Layer      | Frontend                        | Backend                    |
-|------------|---------------------------------|----------------------------|
-| Framework  | Next.js 16 (React 19)           | NestJS 11                  |
-| Auth       | WebAuthn API + JWT (localStorage)| Passport JWT + bcrypt     |
-| Styling    | Tailwind CSS                    | N/A                        |
-| Database   | N/A                             | MongoDB (Mongoose)         |
-| Port       | 3001                            | 3000                       |
+| Layer      | Frontend                                          | Backend                    |
+|------------|---------------------------------------------------|----------------------------|
+| Framework  | Next.js 16 (React 19)                             | NestJS 11                  |
+| Auth       | WebAuthn + BiometricBridge (native) + JWT         | Passport JWT + bcrypt      |
+| Biometric  | `navigator.credentials` / `window.flutter_...`    | ECDSA-SHA256 verification  |
+| Styling    | Tailwind CSS                                      | N/A                        |
+| Database   | N/A                                               | MongoDB (Mongoose)         |
+| Port       | 3001                                              | 3000                       |
 
 ---
 
@@ -133,12 +160,13 @@ Returns the authenticated user's profile.
 #### `POST /api/biometric/register`
 
 Stores a biometric credential (public key) for a user.
+Used by both WebAuthn and native biometric flows.
 
 | Field       | Type   | Required | Description                           |
 |-------------|--------|----------|---------------------------------------|
 | `userId`    | string | ✓        | MongoDB user `_id`                    |
-| `publicKey` | string | ✓        | Base64url-encoded COSE public key     |
-| `keyAlias`  | string |          | Credential ID (base64url)             |
+| `publicKey` | string | ✓        | Base64-encoded public key             |
+| `keyAlias`  | string |          | Key alias or credential ID            |
 
 **Response (201):**
 
@@ -147,8 +175,8 @@ Stores a biometric credential (public key) for a user.
   "message": "Biometric credential registered successfully",
   "credential": {
     "id": "682a...",
-    "publicKey": "pAEBA...base64url",
-    "keyAlias": "a1B2c3...base64url",
+    "publicKey": "pAEBA...base64",
+    "keyAlias": "a1B2c3...base64",
     "createdAt": "2026-01-01T00:00:00.000Z"
   }
 }
@@ -165,18 +193,29 @@ No request body required.
 
 ```json
 {
-  "challenge": "dGhpcyBpcyBhIHJhbmRvb...base64url"
+  "challenge": "dGhpcyBpcyBhIHJhbmRvb...base64"
 }
 ```
 
-> The challenge is a 32-byte cryptographically random value encoded as
-> base64url. It expires after 5 minutes (configurable).
+> The challenge is a cryptographically random value. It expires after
+> 60 seconds (configurable via `BIOMETRIC_CHALLENGE_EXPIRY`).
 
 ---
 
 #### `POST /api/biometric/verify`
 
-Verifies a WebAuthn assertion signature and returns a JWT token.
+Verifies a biometric signature and returns a JWT token.
+Supports two verification methods:
+
+**Native Biometric** (from mobile WebView):
+
+| Field       | Type   | Required | Description                         |
+|-------------|--------|----------|-------------------------------------|
+| `signature` | string | ✓        | Base64-encoded ECDSA signature      |
+| `publicKey` | string | ✓        | Base64-encoded public key           |
+| `payload`   | string | ✓        | The original challenge nonce        |
+
+**WebAuthn** (from desktop browser):
 
 | Field              | Type   | Required | Description                              |
 |--------------------|--------|----------|------------------------------------------|
@@ -198,7 +237,7 @@ Verifies a WebAuthn assertion signature and returns a JWT token.
 
 ---
 
-#### `POST /api/biometric/unregister`
+#### `DELETE /api/biometric/unregister`
 
 Removes biometric credential(s) for the authenticated user.
 
@@ -273,15 +312,24 @@ const response = await fetch(`${API_URL}/auth/login`, {
 ## Biometric Registration Flow
 
 This flow enrolls a user's biometric credential (fingerprint/face) for
-passwordless authentication.
+passwordless authentication. There are two variants depending on the
+runtime environment.
 
-### Prerequisites
+### Prerequisites (both flows)
 
 - User must be logged in (JWT token available)
+- Biometric hardware must be available on the device
+
+---
+
+### Variant A: WebAuthn (Desktop Browser)
+
+#### Prerequisites
+
 - Browser must support WebAuthn
 - Platform authenticator (biometric hardware) must be available
 
-### Steps
+#### Steps
 
 ```
 ┌──────────┐                              ┌──────────┐
@@ -329,7 +377,7 @@ passwordless authentication.
      │                                         │
 ```
 
-### Frontend Storage
+#### Frontend Storage
 
 After successful registration, the credential ID is stored in localStorage
 keyed by user email:
@@ -341,32 +389,95 @@ localStorage.setItem(STORAGE_KEY, JSON.stringify([credentialId]));
 
 ---
 
+### Variant B: Native Biometric (Mobile WebView)
+
+#### Prerequisites
+
+- Frontend must be running inside the mobile app WebView (`isNativeApp() === true`)
+- Device must support biometric authentication
+
+#### Steps
+
+```
+┌───────────┐     ┌──────────────┐      ┌──────────────┐     ┌─────────┐
+│ Dashboard │     │ BiometricCtx │      │BioBridge→JS  │     │ Backend │
+│  Page     │     │  Provider    │      │  → Native    │     │  API    │
+└─────┬─────┘     └──────┬───────┘      └──────┬───────┘     └────┬────┘
+      │                  │                     │                  │
+      │ enableBiometric  │                     │                  │
+      │ (userId)         │                     │                  │
+      ├─────────────────▶│                     │                  │
+      │                  │                     │                  │
+      │                  │ 1. checkAvail..()   │                  │
+      │                  ├────────────────────▶│                  │
+      │                  │◀────────────────────┤                  │
+      │                  │                     │                  │
+      │                  │ 2. keyExists()      │                  │
+      │                  ├────────────────────▶│                  │
+      │                  │◀────────────────────┤                  │
+      │                  │                     │                  │
+      │                  │ [if exists]         │                  │
+      │                  │ 3. deleteKeys()     │                  │
+      │                  ├────────────────────▶│                  │
+      │                  │◀────────────────────┤                  │
+      │                  │                     │                  │
+      │                  │ 4. createKeys()     │                  │
+      │                  ├────────────────────▶│                  │
+      │                  │    🖐️ Biometric     │                  │
+      │                  │    Prompt           │                  │
+      │                  │◀────────────────────┤                  │
+      │                  │ {publicKey,keyAlias}│                  │
+      │                  │                     │                  │
+      │                  │ 5. POST /biometric/register            │
+      │                  │ {userId, publicKey, keyAlias}          │
+      │                  ├───────────────────────────────────────▶│
+      │                  │◀───────────────────────────────────────┤
+      │                  │ {message, credential}                  │
+      │                  │                     │                  │
+      │◀─────────────────┤                     │                  │
+      │ {success: true}  │                     │                  │
+```
+
+#### Key Differences from WebAuthn
+
+| Aspect               | WebAuthn                          | Native Biometric                  |
+|----------------------|-----------------------------------|-----------------------------------|
+| Key generation       | `navigator.credentials.create()`  | `BiometricBridge.createKeys()`    |
+| Key storage          | Browser platform authenticator    | Android Keystore / iOS Keychain   |
+| Public key format    | COSE (CBOR)                       | Base64-encoded DER/PEM            |
+| Frontend storage     | Credential ID in localStorage     | None (managed by native SDK)      |
+| Biometric prompt     | Browser dialog                    | Native OS dialog                  |
+
+---
+
 ## Biometric Login Flow
 
 Passwordless authentication using a previously registered biometric credential.
+There are two variants depending on the runtime environment.
 
-### Prerequisites
+### Prerequisites (both flows)
 
 - User has registered at least one biometric credential
-- Credential ID is stored in localStorage
-- Browser supports WebAuthn
+- Biometric hardware is available
 
-### Steps
+---
+
+### Variant A: WebAuthn (Desktop Browser)
 
 ```
 ┌──────────┐                              ┌──────────┐
 │  Browser │                              │  Server  │
 └────┬─────┘                              └────┬─────┘
      │                                         │
-     │  1. User clicks "Biometric Login"       │
+     │  1. User clicks "WebAuthn Login"        │
      │                                         │
      │  POST /api/biometric/challenge ────────►│
      │                                         │
      │             2. Generate random nonce    │
      │                Store in MongoDB with    │
-     │                expiry (5 min)           │
+     │                expiry (60s)             │
      │                                         │
-     │  ◄──── { challenge: "base64url..." }    │
+     │  ◄──── { challenge: "base64..." }       │
      │                                         │
      │  3. Load credential IDs from            │
      │     localStorage                        │
@@ -384,8 +495,6 @@ Passwordless authentication using a previously registered biometric credential.
      │  │ OS prompts for fingerprint/face  │   │
      │  │ Authenticator signs:             │   │
      │  │   authData || SHA-256(clientJSON)│   │
-     │  │ Returns: signature, authData,    │   │
-     │  │          clientDataJSON, rawId   │   │
      │  └──────────────────────────────────┘   │
      │                                         │
      │  5. POST /api/biometric/verify ────────►│
@@ -403,13 +512,9 @@ Passwordless authentication using a previously registered biometric credential.
      │                 c. Find credential      │
      │                    by credentialId      │
      │                 d. Validate clientData  │
-     │                    (type + challenge)   │
      │                 e. Reconstruct signed   │
-     │                    data per WebAuthn:   │
-     │                    authData ||          │
-     │                      SHA-256(clientJSON)│
+     │                    data (WebAuthn fmt)  │
      │                 f. Verify ECDSA sig     │
-     │                    using stored pubkey  │
      │                 g. Mark challenge used  │
      │                 h. Issue JWT token      │
      │                                         │
@@ -420,28 +525,82 @@ Passwordless authentication using a previously registered biometric credential.
      │                                         │
 ```
 
-### WebAuthn Signature Verification (Backend)
+---
 
-The backend verifies the assertion signature using this formula:
+### Variant B: Native Biometric (Mobile WebView)
+
+```
+┌───────────┐     ┌──────────────┐      ┌──────────────┐     ┌─────────┐
+│  Login    │     │ BiometricCtx │      │BioBridge→JS  │     │ Backend │
+│  Page     │     │  Provider    │      │  → Native    │     │  API    │
+└─────┬─────┘     └──────┬───────┘      └──────┬───────┘     └────┬────┘
+      │                  │                     │                  │
+      │ loginWithBio()   │                     │                  │
+      ├─────────────────▶│                     │                  │
+      │                  │                     │                  │
+      │                  │ 1. POST /biometric/challenge           │
+      │                  ├───────────────────────────────────────▶│
+      │                  │◀───────────────────────────────────────┤
+      │                  │ {challenge: "nonce"}│                  │
+      │                  │                     │                  │
+      │                  │ 2. sign(challenge)  │                  │
+      │                  ├────────────────────▶│                  │
+      │                  │    🖐️ Biometric     │                  │
+      │                  │    Prompt           │                  │
+      │                  │◀────────────────────┤                  │
+      │                  │ {signature,publicKey│                  │
+      │                  │  payload}           │                  │
+      │                  │                     │                  │
+      │                  │ 3. POST /biometric/verify              │
+      │                  │ {signature, publicKey, payload}        │
+      │                  ├───────────────────────────────────────▶│
+      │                  │              4. Server verifies        │
+      │                  │                 a. Find challenge      │
+      │                  │                 b. Check not expired   │
+      │                  │                 c. Find credential     │
+      │                  │                    by publicKey        │
+      │                  │                 d. Direct ECDSA verify │
+      │                  │                    (SHA-256 payload)   │
+      │                  │                 e. Mark challenge used │
+      │                  │                 f. Issue JWT token     │
+      │                  │◀───────────────────────────────────────┤
+      │                  │ {accessToken, userId, email}           │
+      │                  │                     │                  │
+      │◀─────────────────┤                     │                  │
+      │ {success,        │                     │                  │
+      │  accessToken}    │                     │                  │
+      │                  │                     │                  │
+      │ 5. Store JWT     │                     │                  │
+      │    Redirect to   │                     │                  │
+      │    /dashboard    │                     │                  │
+```
+
+### Signature Verification (Backend)
+
+The backend supports two verification methods:
+
+**Native Biometric** — Direct ECDSA signature verification:
+
+```
+signedData = SHA-256(payload)    // or raw payload depending on native SDK
+valid = ECDSA_verify(publicKey, signedData, signature)
+```
+
+**WebAuthn** — Assertion verification per WebAuthn spec:
 
 ```
 signedData = authenticatorData + SHA-256(clientDataJSON)
 valid = ECDSA_verify(publicKey, signedData, signature)
 ```
 
-The stored public key is in COSE format (from `getPublicKey()`). The backend
-converts it to PEM via:
-
-1. Parse CBOR-encoded COSE key to extract x, y coordinates (P-256 curve)
-2. Construct uncompressed EC point: `0x04 || x || y`
-3. Wrap in SubjectPublicKeyInfo ASN.1 DER structure
-4. Base64-encode and wrap in PEM headers
+The backend detects which method to use based on the presence of
+`publicKey` (native) vs `credentialId` + `authenticatorData` (WebAuthn).
 
 ---
 
 ## Sequence Diagrams
 
-### Complete User Journey
+### Complete User Journey (WebAuthn)
 
 ```
 Register → Login → Enroll Biometric → Biometric Login → Dashboard
@@ -492,6 +651,55 @@ Register → Login → Enroll Biometric → Biometric Login → Dashboard
        │                 │                │
        │  sees dashboard │                │
        │◄────────────────│                │
+```
+
+### Complete User Journey (Native Biometric)
+
+```
+Register → Login → Enroll Biometric → Biometric Login → Dashboard
+
+    ┌─────┐     ┌───────────┐     ┌──────────┐      ┌──────┐
+    │User │     │WebView/FE │     │Flutter   │      │Server│
+    └──┬──┘     └─────┬─────┘     └────┬─────┘      └──┬───┘
+       │              │                │               │
+       │ logs in with │                │               │
+       │ email/pass   │                │               │
+       ├─────────────►│ POST /login ──────────────────►│
+       │              │◄──────────────── JWT           │
+       │              │                │               │
+       │ "Enable Bio" │                │               │
+       ├─────────────►│                │               │
+       │              │ checkAvailable │               │
+       │              │───────────────►│               │
+       │              │◄───────────────│               │
+       │              │ createKeys     │               │
+       │              │───────────────►│               │
+       │  🖐️ bio      │                │               │
+       │◄─────────────│◄───────────────│               │
+       │  🖐️ scan     │                │               │
+       ├─────────────►│───────────────►│ {publicKey}   │
+       │              │                │               │
+       │              │ POST /biometric/register ─────►│
+       │              │◄───────────────────────────────│
+       │              │                │               │
+       │  logs out    │                │               │
+       ├─────────────►│                │               │
+       │              │                │               │
+       │ "Bio Login"  │                │               │
+       ├─────────────►│                │               │
+       │              │ POST /challenge ──────────────►│
+       │              │◄─────────────── nonce          │
+       │              │ sign(challenge)│               │
+       │              │───────────────►│               │
+       │  🖐️ bio     │                 │               │
+       │◄─────────────│◄───────────────│ {signature}   │
+       │  🖐️ scan    │                 │               │
+       ├─────────────►│                │               │
+       │              │ POST /verify ─────────────────►│
+       │              │◄──────────────── JWT           │
+       │              │                │               │
+       │  dashboard   │                │               │
+       │◄─────────────│                │               │
 ```
 
 ---
@@ -552,7 +760,7 @@ Pages catch errors and display them in a styled error banner:
 | `MONGODB_URI`                | —       | MongoDB connection string         |
 | `JWT_SECRET`                 | —       | Secret key for signing JWT tokens |
 | `JWT_EXPIRATION`             | 24h     | JWT token expiration time         |
-| `BIOMETRIC_CHALLENGE_EXPIRY` | 300     | Challenge expiration (seconds)    |
+| `BIOMETRIC_CHALLENGE_EXPIRY` | 60      | Challenge expiration (seconds)    |
 
 ### Frontend Environment Variables
 
@@ -573,21 +781,26 @@ NEXT_PUBLIC_API_URL=http://localhost:3000/api
 1. **Challenge-Response Pattern** — The server issues a one-time challenge
    that must be signed by the device's private key. This prevents replay attacks.
 
-2. **Challenge Expiry** — Challenges expire after 5 minutes by default,
+2. **Challenge Expiry** — Challenges expire after 60 seconds by default,
    limiting the window for interception.
 
 3. **Single-Use Challenges** — Each challenge is marked as used after
    successful verification, preventing reuse.
 
-4. **WebAuthn User Verification** — The `userVerification: "required"` setting
-   ensures the user is physically present and verified via biometric.
+4. **User Verification** — Both WebAuthn (`userVerification: "required"`)
+   and native biometric flows ensure the user is physically present and
+   verified via biometric.
 
-5. **ES256 (P-256 + SHA-256)** — Uses strong elliptic curve cryptography
-   for all signature operations.
+5. **ES256 / ECDSA-SHA256** — Uses strong elliptic curve cryptography
+   (P-256 curve) for all signature operations.
 
 6. **JWT Authentication** — All protected endpoints require a valid JWT token
    in the `Authorization: Bearer` header.
 
 7. **No Private Key Transmission** — The private key never leaves the device's
-   secure hardware (TPM/Secure Enclave). Only the public key and signature
-   are transmitted.
+   secure hardware (TPM / Secure Enclave / Android Keystore / iOS Keychain).
+   Only the public key and signature are transmitted.
+
+8. **Dual-Path Verification** — The backend verifies signatures using the
+   appropriate method (direct ECDSA for native, WebAuthn assertion format
+   for browser), ensuring both paths are equally secure.
