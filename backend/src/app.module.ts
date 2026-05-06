@@ -1,9 +1,9 @@
 import { Module } from '@nestjs/common';
-import { ConfigModule } from '@nestjs/config';
+import { ConfigModule, ConfigService } from '@nestjs/config';
 import { MongooseModule } from '@nestjs/mongoose';
-import configuration from './config/configuration';
 import { AuthModule } from './auth/auth.module';
 import { BiometricModule } from './biometric/biometric.module';
+import configuration from './config/configuration';
 
 /**
  * Root application module.
@@ -24,9 +24,9 @@ import { BiometricModule } from './biometric/biometric.module';
     // MongoDB database connection
     MongooseModule.forRootAsync({
       imports: [ConfigModule],
-      inject: [ConfigModule],
-      useFactory: () => ({
-        uri: configuration().mongodb.uri,
+      inject: [ConfigService],
+      useFactory: (configService: ConfigService) => ({
+        uri: configService.get<string>('mongodb.uri'),
       }),
     }),
     // Feature modules
