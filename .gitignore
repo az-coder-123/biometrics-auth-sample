@@ -113,6 +113,7 @@ app.*.symbols
 # Node
 **/node_modules/
 **/dist/
+.env
 
 # Exceptions to above rules.
 !**/ios/**/default.mode1v3
