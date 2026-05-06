@@ -11,25 +11,25 @@ export class BiometricVerifyDto {
   /** Base64url-encoded credential ID (stored as keyAlias during registration). */
   @IsString()
   @IsNotEmpty({ message: 'Credential ID is required' })
-  credentialId: string;
+  credentialId!: string;
 
   /** Base64url-encoded assertion signature from WebAuthn. */
   @IsString()
   @IsNotEmpty({ message: 'Signature is required' })
-  signature: string;
+  signature!: string;
 
   /** Base64url-encoded authenticator data from WebAuthn assertion. */
   @IsString()
   @IsNotEmpty({ message: 'Authenticator data is required' })
-  authenticatorData: string;
+  authenticatorData!: string;
 
   /** Base64url-encoded client data JSON from WebAuthn assertion. */
   @IsString()
   @IsNotEmpty({ message: 'Client data JSON is required' })
-  clientDataJSON: string;
+  clientDataJSON!: string;
 
   /** The challenge nonce that was originally sent to the client. */
   @IsString()
   @IsNotEmpty({ message: 'Payload (challenge nonce) is required' })
-  payload: string;
+  payload!: string;
 }

@@ -1,4 +1,4 @@
-import { IsNotEmpty, IsString, IsOptional } from 'class-validator';
+import { IsNotEmpty, IsOptional, IsString } from 'class-validator';
 
 /**
  * DTO for biometric credential registration.
@@ -9,11 +9,11 @@ import { IsNotEmpty, IsString, IsOptional } from 'class-validator';
 export class BiometricRegisterDto {
   @IsString()
   @IsNotEmpty({ message: 'User ID is required' })
-  userId: string;
+  userId!: string;
 
   @IsString()
   @IsNotEmpty({ message: 'Public key is required' })
-  publicKey: string;
+  publicKey!: string;
 
   @IsString()
   @IsOptional()
