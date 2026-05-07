@@ -13,6 +13,7 @@ import { useBiometric } from "@/contexts/biometric-context";
 import { biometricApi } from "@/lib/api-client";
 import {
   generateRandomBuffer,
+  isSecureContext,
   isWebAuthnSupported,
   registerBiometricCredential,
 } from "@/lib/webauthn";
@@ -39,8 +40,13 @@ export default function DashboardPage() {
     disableBiometric,
   } = useBiometric();
 
-  // Detect WebAuthn browser support without hydration mismatch.
-  // Server snapshot is false; client snapshot reads the actual browser API.
+  // Detect secure context and WebAuthn support without hydration mismatch.
+  // Server snapshots are false; client snapshots read actual browser APIs.
+  const httpsContext = useSyncExternalStore(
+    () => () => {},
+    () => isSecureContext(),
+    () => false,
+  );
   const webAuthnAvailable = useSyncExternalStore(
     () => () => {},
     () => isWebAuthnSupported(),
@@ -294,9 +300,9 @@ export default function DashboardPage() {
 
           {!biometricAvailable ? (
             <div className="bg-yellow-50 border border-yellow-200 text-yellow-700 px-4 py-3 rounded-lg text-sm">
-              Biometric authentication is not available on this device. Please
-              use a device with a fingerprint sensor or face recognition
-              support.
+              {!isNative && !httpsContext
+                ? "WebAuthn requires a secure connection. Please access this app via HTTPS (or localhost for development). Plain HTTP over an IP address is not supported."
+                : "Biometric authentication is not available on this device. Please use a device with a fingerprint sensor or face recognition support."}
             </div>
           ) : (
             <div className="space-y-4">

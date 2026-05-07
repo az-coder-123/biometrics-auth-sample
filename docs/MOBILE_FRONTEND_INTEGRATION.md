@@ -343,7 +343,12 @@ The following table shows how TypeScript interfaces in the frontend map to Dart 
 
 ## Fallback Behavior
 
-When the frontend detects it is **not** running inside the mobile WebView (`isNativeApp() === false`), it falls back to the **WebAuthn browser API**:
+When the frontend detects it is **not** running inside the mobile WebView (`isNativeApp() === false`), it falls back to the **WebAuthn browser API**.
+
+> **Note:** WebAuthn requires a Secure Context (HTTPS or `localhost`). If the
+> frontend is accessed over plain HTTP from a non-localhost origin the browser
+> will hide `window.PublicKeyCredential` and biometric detection will return
+> false. See [WebAuthn Secure Context](./WEBAUTHN_SECURE_CONTEXT.md).
 
 | Feature | Native (Mobile WebView) | WebAuthn (Desktop Browser) |
 |---|---|---|

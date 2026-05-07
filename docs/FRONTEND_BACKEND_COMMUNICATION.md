@@ -8,6 +8,13 @@ communicate during the authentication and biometric enrollment flows.
 > - **Native Biometric** — when running inside the Flutter mobile app WebView
 >   (see [Mobile ↔ Frontend Integration](./MOBILE_FRONTEND_INTEGRATION.md))
 
+> **Important:** WebAuthn only works in a **Secure Context** (HTTPS or
+> `localhost`). Accessing the frontend via a plain HTTP IP address (e.g.
+> `http://192.168.1.11:3001`) will cause the browser to hide the
+> `window.PublicKeyCredential` API, making biometric detection always return
+> false. See [WebAuthn Secure Context](./WEBAUTHN_SECURE_CONTEXT.md) for the
+> full explanation and development HTTPS setup options.
+
 ---
 
 ## Table of Contents

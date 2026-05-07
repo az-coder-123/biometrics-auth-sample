@@ -74,12 +74,29 @@ function base64urlToBuffer(base64url: string): ArrayBuffer {
 // ---------------------------------------------------------------------------
 
 /**
+ * Returns true when running in a Secure Context (HTTPS or localhost).
+ *
+ * WebAuthn is restricted to Secure Contexts by the browser. On plain HTTP
+ * with a non-localhost origin (e.g. http://192.168.x.x) browsers hide
+ * window.PublicKeyCredential entirely, so this check must come first.
+ */
+export function isSecureContext(): boolean {
+  return typeof window !== "undefined" && window.isSecureContext;
+}
+
+/**
  * Checks whether the browser supports WebAuthn.
+ *
+ * Requires a Secure Context — returns false on plain HTTP (non-localhost).
  *
  * @returns True if WebAuthn is available
  */
 export function isWebAuthnSupported(): boolean {
-  return typeof window !== "undefined" && !!window.PublicKeyCredential;
+  return (
+    typeof window !== "undefined" &&
+    window.isSecureContext &&
+    !!window.PublicKeyCredential
+  );
 }
 
 /**
