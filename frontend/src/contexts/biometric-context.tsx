@@ -297,30 +297,69 @@ export function BiometricProvider({ children }: { children: ReactNode }) {
    *       → verify signature on backend → return access token.
    */
   const loginWithBiometric = useCallback(async () => {
+    console.log("[BiometricContext] loginWithBiometric called");
+
     if (!isNativeApp()) {
+      console.warn("[BiometricContext] loginWithBiometric: not in native app");
       return { success: false, error: "Native biometric is only available inside the mobile app." };
     }
 
     try {
+      // Step 1: Request challenge from backend
+      console.log("[BiometricContext] loginWithBiometric: requesting challenge from backend...");
       const { challenge } = await biometricApi.generateChallenge();
+      console.log("[BiometricContext] loginWithBiometric: challenge received", {
+        challengeLength: challenge?.length,
+        challengePreview: challenge?.substring(0, 16),
+      });
 
+      // Step 2: Sign challenge with biometric key
+      console.log("[BiometricContext] loginWithBiometric: requesting biometric signature...");
       const signResult = await BiometricBridge.sign(
         challenge,
         null,
         "Authenticate to login",
       );
+      console.log("[BiometricContext] loginWithBiometric: sign result", {
+        success: signResult.success,
+        hasSignature: !!signResult.signature,
+        signatureLength: signResult.signature?.length,
+        hasPublicKey: !!signResult.publicKey,
+        publicKeyLength: signResult.publicKey?.length,
+        hasPayload: !!signResult.payload,
+        error: signResult.error,
+      });
 
       if (!signResult.success || !signResult.signature) {
+        console.error("[BiometricContext] loginWithBiometric: signing FAILED", {
+          success: signResult.success,
+          hasSignature: !!signResult.signature,
+          error: signResult.error,
+        });
         return {
           success: false,
           error: signResult.error ?? "Authentication failed.",
         };
       }
 
-      const verifyResult = await biometricApi.verifySignature({
+      // Step 3: Verify signature with backend
+      const verifyPayload = {
         signature: signResult.signature,
         publicKey: signResult.publicKey ?? "",
         payload: signResult.payload ?? challenge,
+      };
+      console.log("[BiometricContext] loginWithBiometric: verifying signature with backend...", {
+        signatureLength: verifyPayload.signature.length,
+        publicKeyLength: verifyPayload.publicKey.length,
+        payloadLength: verifyPayload.payload.length,
+        usingOriginalChallenge: verifyPayload.payload === challenge,
+      });
+
+      const verifyResult = await biometricApi.verifySignature(verifyPayload);
+      console.log("[BiometricContext] loginWithBiometric: verify result", {
+        hasAccessToken: !!verifyResult.accessToken,
+        userId: verifyResult.userId,
+        email: verifyResult.email,
       });
 
       return {
@@ -329,7 +368,12 @@ export function BiometricProvider({ children }: { children: ReactNode }) {
         userId: verifyResult.userId,
         email: verifyResult.email,
       };
-    } catch {
+    } catch (err) {
+      console.error("[BiometricContext] loginWithBiometric: UNEXPECTED ERROR", {
+        error: err,
+        message: err instanceof Error ? err.message : "Unknown error",
+        stack: err instanceof Error ? err.stack : undefined,
+      });
       return { success: false, error: "Login failed. Please try again." };
     }
   }, []);
