@@ -29,8 +29,8 @@ A complete **biometric authentication system** demonstrating hardware-backed cry
 │  │  - Android Keystore  │      │  - BiometricBridge       │     │
 │  │  - iOS Secure Enclave│      │  - BiometricContext      │     │
 │  └──────────────────────┘      └──────────────────────────┘     │
-│                                          │                       │
-└──────────────────────────────────────────┼───────────────────────┘
+│                                          │                      │
+└──────────────────────────────────────────┼──────────────────────┘
                                            │ HTTP/REST
                                            ▼
                     ┌──────────────────────────────────────┐
