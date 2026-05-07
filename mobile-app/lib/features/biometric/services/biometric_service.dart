@@ -132,6 +132,9 @@ class BiometricService {
   ///              the same key can be found later during signing.
   /// [promptMessage] - Prompt shown during biometric authentication.
   ///
+  /// IMPORTANT: This method first authenticates the user with biometric to
+  /// ensure they can actually use the feature before creating keys.
+  ///
   /// Returns:
   /// ```json
   /// { "success": true, "publicKey": "MFkwEwYHKo...", "keyAlias": "biometrics_auth_default" }
@@ -144,6 +147,28 @@ class BiometricService {
     final effectiveAlias = keyAlias ?? _defaultKeyAlias;
 
     try {
+      // STEP 1: Authenticate user BEFORE creating keys to verify they can use biometric
+      AppLogger.info('🔐 Authenticating user before creating keys...');
+      final authenticated = await _localAuth.authenticate(
+        localizedReason:
+            promptMessage ?? 'Authenticate to enable biometric login',
+        options: const AuthenticationOptions(
+          biometricOnly: true,
+          stickyAuth: true,
+        ),
+      );
+
+      if (!authenticated) {
+        AppLogger.warning('❌ User failed biometric authentication');
+        return {
+          'success': false,
+          'error': 'Biometric authentication failed or was cancelled',
+        };
+      }
+
+      AppLogger.info('✅ User authenticated successfully, creating keys...');
+
+      // STEP 2: Create the key pair (no prompt needed, already authenticated)
       AppLogger.info('Creating biometric key pair (alias: $effectiveAlias)');
 
       final result = await _biometric.createKeys(

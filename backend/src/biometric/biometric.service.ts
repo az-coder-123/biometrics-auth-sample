@@ -115,6 +115,33 @@ export class BiometricService {
   }
 
   /**
+   * Verifies a biometric signature (supports both WebAuthn and native biometric).
+   *
+   * Auto-detects format:
+   * - If credentialId is present → WebAuthn verification
+   * - If publicKey is present → Native biometric verification
+   *
+   * @param verifyDto - Contains signature and either (credentialId + authenticatorData + clientDataJSON) or (publicKey)
+   * @returns JWT access token and user info
+   * @throws UnauthorizedException if verification fails
+   */
+  async verifySignature(
+    verifyDto: BiometricVerifyDto,
+  ): Promise<{ accessToken: string; userId: string; email: string }> {
+    // Auto-detect format and route to appropriate verification method
+    if (verifyDto.credentialId) {
+      // WebAuthn format
+      return this.verifyWebAuthnSignature(verifyDto);
+    } else if (verifyDto.publicKey) {
+      // Native biometric format
+      return this.verifyNativeBiometric(verifyDto);
+    } else {
+      this.logger.warn('Invalid verification request: missing credentialId or publicKey');
+      throw new UnauthorizedException('Either credentialId or publicKey is required');
+    }
+  }
+
+  /**
    * Verifies a WebAuthn assertion signature against the stored public key.
    *
    * WebAuthn assertion verification flow:
@@ -129,10 +156,16 @@ export class BiometricService {
    * @returns JWT access token and user info
    * @throws UnauthorizedException if verification fails
    */
-  async verifySignature(
+  private async verifyWebAuthnSignature(
     verifyDto: BiometricVerifyDto,
   ): Promise<{ accessToken: string; userId: string; email: string }> {
     const { credentialId, signature, authenticatorData, clientDataJSON, payload } = verifyDto;
+
+    // Validate required WebAuthn fields
+    if (!credentialId || !authenticatorData || !clientDataJSON) {
+      this.logger.warn('Missing required WebAuthn fields');
+      throw new UnauthorizedException('credentialId, authenticatorData, and clientDataJSON are required for WebAuthn verification');
+    }
 
     // Step 1: Validate the challenge
     const challenge = await this.challengeModel.findOne({ nonce: payload }).exec();
@@ -198,6 +231,108 @@ export class BiometricService {
     const accessToken = this.authService.generateFullToken(userId, user.email);
 
     this.logger.log(`Biometric authentication successful for user: ${userId}`);
+
+    return {
+      accessToken,
+      userId,
+      email: user.email,
+    };
+  }
+
+  /**
+   * Verifies a native biometric signature (RSA-SHA256).
+   *
+   * Native biometric verification flow:
+   * 1. Validate the challenge exists and hasn't expired
+   * 2. Find the credential by public key
+   * 3. Verify the RSA signature using crypto.verify
+   * 4. Mark the challenge as used and issue a JWT token
+   *
+   * @param verifyDto - Contains signature, publicKey, and payload (challenge)
+   * @returns JWT access token and user info
+   * @throws UnauthorizedException if verification fails
+   */
+  async verifyNativeBiometric(
+    verifyDto: BiometricVerifyDto,
+  ): Promise<{ accessToken: string; userId: string; email: string }> {
+    const { signature, publicKey, payload } = verifyDto;
+
+    // Step 1: Validate the challenge
+    const challenge = await this.challengeModel.findOne({ nonce: payload }).exec();
+    if (!challenge) {
+      this.logger.warn(`Challenge not found: ${payload}`);
+      throw new UnauthorizedException('Invalid or expired challenge');
+    }
+
+    if (challenge.isUsed) {
+      this.logger.warn(`Challenge already used: ${payload}`);
+      throw new UnauthorizedException('Challenge has already been used');
+    }
+
+    if (new Date() > challenge.expiresAt) {
+      this.logger.warn(`Challenge expired: ${payload}`);
+      throw new UnauthorizedException('Challenge has expired');
+    }
+
+    // Step 2: Find the credential by public key
+    if (!publicKey) {
+      this.logger.warn('Public key is required for native biometric verification');
+      throw new UnauthorizedException('Public key is required');
+    }
+
+    const credential = await this.credentialModel
+      .findOne({ publicKey, isActive: true })
+      .exec();
+
+    if (!credential) {
+      this.logger.warn(`No active credential found for publicKey: ${publicKey.substring(0, 20)}...`);
+      throw new UnauthorizedException('Biometric credential not found');
+    }
+
+    // Step 3: Verify the RSA signature
+    try {
+      // Reconstruct public key in PEM format
+      const publicKeyPem = `-----BEGIN PUBLIC KEY-----\n${publicKey}\n-----END PUBLIC KEY-----`;
+      const publicKeyObject = createPublicKey(publicKeyPem);
+
+      // Verify signature
+      const isValid = verify(
+        'RSA-SHA256',
+        Buffer.from(payload, 'utf-8'),
+        publicKeyObject,
+        Buffer.from(signature, 'base64'),
+      );
+
+      if (!isValid) {
+        this.logger.warn(`Invalid native biometric signature for user: ${credential.userId}`);
+        throw new UnauthorizedException('Invalid biometric signature');
+      }
+    } catch (error) {
+      this.logger.error(`Signature verification error: ${error instanceof Error ? error.message : String(error)}`);
+      throw new UnauthorizedException('Signature verification failed');
+    }
+
+    // Step 4: Mark challenge as used
+    challenge.isUsed = true;
+    await challenge.save();
+
+    // Step 5: Generate JWT token
+    const userId = credential.userId.toString();
+    const user = await this.authService.findUserById(userId);
+
+    if (!user) {
+      this.logger.error(`User not found for credential: ${userId}`);
+      throw new UnauthorizedException('User account not found');
+    }
+
+    if (!user.isActive) {
+      this.logger.warn(`Inactive user attempted biometric login: ${userId}`);
+      throw new UnauthorizedException('Account is deactivated');
+    }
+
+    const accessToken = this.authService.generateFullToken(userId, user.email);
+
+    this.logger.log(`Native biometric authentication successful for user: ${userId}`);
 
     return {
       accessToken,

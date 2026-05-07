@@ -1,32 +1,37 @@
-import { IsNotEmpty, IsString } from 'class-validator';
+import { IsNotEmpty, IsOptional, IsString } from 'class-validator';
 
 /**
- * DTO for biometric signature verification (WebAuthn).
+ * DTO for biometric signature verification.
  *
- * Sent by the client after the device signs the challenge nonce
- * via the WebAuthn API. The backend verifies the assertion signature
- * against the stored public key using the WebAuthn verification format.
+ * Supports two authentication methods:
+ * 1. **Native biometric** — signature + publicKey + payload
+ * 2. **WebAuthn** — credentialId + signature + authenticatorData + clientDataJSON + payload
  */
 export class BiometricVerifyDto {
-  /** Base64url-encoded credential ID (stored as keyAlias during registration). */
+  /** Base64url-encoded credential ID (for WebAuthn). */
   @IsString()
-  @IsNotEmpty({ message: 'Credential ID is required' })
-  credentialId!: string;
+  @IsOptional()
+  credentialId?: string;
 
-  /** Base64url-encoded assertion signature from WebAuthn. */
+  /** Base64-encoded signature. */
   @IsString()
   @IsNotEmpty({ message: 'Signature is required' })
   signature!: string;
 
-  /** Base64url-encoded authenticator data from WebAuthn assertion. */
+  /** Base64url-encoded authenticator data (for WebAuthn). */
   @IsString()
-  @IsNotEmpty({ message: 'Authenticator data is required' })
-  authenticatorData!: string;
+  @IsOptional()
+  authenticatorData?: string;
 
-  /** Base64url-encoded client data JSON from WebAuthn assertion. */
+  /** Base64url-encoded client data JSON (for WebAuthn). */
   @IsString()
-  @IsNotEmpty({ message: 'Client data JSON is required' })
-  clientDataJSON!: string;
+  @IsOptional()
+  clientDataJSON?: string;
+
+  /** Base64-encoded public key (for native biometric). */
+  @IsString()
+  @IsOptional()
+  publicKey?: string;
 
   /** The challenge nonce that was originally sent to the client. */
   @IsString()
