@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 
@@ -12,8 +14,10 @@ import 'features/webview/pages/webview_page.dart';
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
-  // Initialize InAppWebView (required before any WebView usage)
-  await InAppWebViewController.setWebContentsDebuggingEnabled(true);
+  // setWebContentsDebuggingEnabled is Android-only; skip on other platforms.
+  if (Platform.isAndroid) {
+    await InAppWebViewController.setWebContentsDebuggingEnabled(true);
+  }
 
   runApp(const BiometricsAuthApp());
 }
