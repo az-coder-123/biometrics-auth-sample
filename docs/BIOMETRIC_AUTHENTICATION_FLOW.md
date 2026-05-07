@@ -286,13 +286,42 @@ As of the latest update, the backend **allows multiple biometric credentials per
 - Revoke specific credentials (set `isActive: false`)
 - Set a maximum number of active credentials per user
 
-### 2. Challenge Replay Prevention
+### 2. State Verification for Multi-User Scenarios
+
+When multiple users share the same device (common in testing environments), the device's local storage may contain biometric keys from different users. To prevent incorrect UI state:
+
+**Problem**: User A enables biometric → logs out → User B logs in with password only
+- Device still has User A's key in secure storage
+- `BiometricBridge.keyExists()` returns `true`
+- UI incorrectly shows "Disable Biometric Login" for User B
+
+**Solution**: Backend verification endpoint
+```typescript
+// After password login (frontend)
+const deviceHasKey = await BiometricBridge.keyExists();
+const backendStatus = await biometricApi.checkNativeCredential(token);
+
+// Only show "Disable" if BOTH conditions are true
+const isRegistered = deviceHasKey.exists && backendStatus.hasCredential;
+```
+
+**Backend Implementation**:
+- Endpoint: `POST /api/biometric/check`
+- Query: Find active credential for `userId` with non-null `keyAlias`
+- Returns: `{ hasCredential: boolean, keyAlias?: string }`
+
+**When Called**:
+- After successful password login (in `LoginPage.handleSubmit`)
+- On dashboard mount (if user already authenticated)
+- After biometric registration/unregistration
+
+### 3. Challenge Replay Prevention
 
 - Each challenge can only be used **once** (`isUsed` flag)
 - Challenges **expire after 5 minutes**
 - Old challenges are **not reusable** even if valid
 
-### 3. Private Key Protection
+### 4. Private Key Protection
 
 - Private keys are **hardware-backed**:
   - Android: `setIsStrongBoxBacked(true)` → TEE/StrongBox
@@ -300,13 +329,13 @@ As of the latest update, the backend **allows multiple biometric credentials per
 - Keys require **biometric authentication** for each use
 - Keys are **bound to the device** (cannot be exported)
 
-### 4. Public Key Storage
+### 5. Public Key Storage
 
 - Public keys stored in MongoDB are **read-only** after registration
 - Each credential is tied to a specific `userId`
 - Credentials can be marked **inactive** instead of deleted (audit trail)
 
-### 5. Signature Algorithm
+### 6. Signature Algorithm
 
 - **RSA-2048** with **SHA-256** hashing
 - Industry-standard algorithm supported by both platforms

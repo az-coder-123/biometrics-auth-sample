@@ -10,6 +10,7 @@ A complete **biometric authentication system** demonstrating hardware-backed cry
 - ✅ **Challenge-Response Flow** (replay attack prevention)
 - ✅ **Dual-Mode Backend** (supports both native and WebAuthn verification)
 - ✅ **Multiple Credentials** (users can register on multiple devices simultaneously)
+- ✅ **Multi-User State Sync** (correct UI state when multiple users share one device)
 - ✅ **JWT Authentication** (stateless session management)
 - ✅ **Production-Ready** (error handling, logging, TypeScript strict mode)
 
@@ -221,6 +222,17 @@ Detailed guides for developers:
 **Solution**: Use `https://localhost:3001` with self-signed certificate, or deploy to production with valid TLS.
 
 See [WebAuthn Secure Context](./docs/WEBAUTHN_SECURE_CONTEXT.md) for detailed setup.
+
+### "Disable Biometric Login" shown for user who never registered
+
+**Cause**: Multiple users sharing the same device. Device has biometric keys from a previous user in local storage.
+
+**Solution**: This is now **automatically fixed** after password login. The frontend verifies credential ownership with the backend (`POST /api/biometric/check`) to ensure the UI shows the correct state for the current user.
+
+**Technical Details**:
+- Device storage is **not user-scoped**, so keys persist across user sessions
+- After login, `verifyRegistrationWithBackend()` checks if the current user owns the device's key
+- UI state: `isRegistered = deviceHasKey && backendHasCredential`
 
 ---
 

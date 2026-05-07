@@ -209,6 +209,38 @@ No request body required.
 
 ---
 
+#### `POST /api/biometric/check`
+
+Checks if the authenticated user has a native biometric credential registered.
+Used for state synchronization in multi-user scenarios on the same device.
+
+| Header          | Value                    |
+|-----------------|--------------------------||
+| `Authorization` | `Bearer <access_token>`  |
+
+**Response (200):**
+
+```json
+{
+  "hasCredential": true,
+  "keyAlias": "biometrics_auth_default"
+}
+```
+
+> **Use Case**: When multiple users share the same device, the device may have
+> biometric keys from a previous user stored locally. This endpoint verifies
+> whether the **currently logged-in user** owns a credential in the backend,
+> ensuring the UI displays the correct registration state.
+>
+> **Frontend Usage**: Called after password login to sync `isRegistered` state:
+> ```typescript
+> const deviceHasKey = await BiometricBridge.keyExists();
+> const backendStatus = await biometricApi.checkNativeCredential(token);
+> const isRegistered = deviceHasKey.exists && backendStatus.hasCredential;
+> ```
+
+---
+
 #### `POST /api/biometric/verify`
 
 Verifies a biometric signature and returns a JWT token.
