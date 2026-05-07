@@ -80,7 +80,7 @@ communicate during the authentication and biometric enrollment flows.
 |------------|---------------------------------------------------|----------------------------|
 | Framework  | Next.js 16 (React 19)                             | NestJS 11                  |
 | Auth       | WebAuthn + BiometricBridge (native) + JWT         | Passport JWT + bcrypt      |
-| Biometric  | `navigator.credentials` / `window.flutter_...`    | ECDSA-SHA256 verification  |
+| Biometric  | `navigator.credentials` / `window.flutter_...`    | RSA-SHA256 (native) + ECDSA-SHA256 (WebAuthn) |
 | Styling    | Tailwind CSS                                      | N/A                        |
 | Database   | N/A                                               | MongoDB (Mongoose)         |
 | Port       | 3001                                              | 3000                       |
@@ -218,7 +218,7 @@ Supports two verification methods:
 
 | Field       | Type   | Required | Description                         |
 |-------------|--------|----------|-------------------------------------|
-| `signature` | string | ✓        | Base64-encoded ECDSA signature      |
+| `signature` | string | ✓        | Base64-encoded RSA signature        |
 | `publicKey` | string | ✓        | Base64-encoded public key           |
 | `payload`   | string | ✓        | The original challenge nonce        |
 
@@ -241,6 +241,15 @@ Supports two verification methods:
   "email": "user@example.com"
 }
 ```
+
+> **Backend Auto-Detection**: The backend automatically detects which verification
+> method to use based on the request fields:
+> - If `credentialId` is present → **WebAuthn verification** (ECDSA signature)
+> - If `publicKey` is present → **Native biometric verification** (RSA-SHA256 signature)
+>
+> This allows the same endpoint to handle both mobile and desktop biometric authentication
+> seamlessly. See [Biometric Authentication Flow](./BIOMETRIC_AUTHENTICATION_FLOW.md) for
+> detailed flow diagrams.
 
 ---
 
