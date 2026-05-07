@@ -11,6 +11,7 @@
 import { useAuth } from "@/contexts/auth-context";
 import { useBiometric } from "@/contexts/biometric-context";
 import { biometricApi } from "@/lib/api-client";
+import { WEBAUTHN_CRED_IDS_PREFIX } from "@/lib/storage-keys";
 import {
   generateRandomBuffer,
   isSecureContext,
@@ -19,9 +20,6 @@ import {
 } from "@/lib/webauthn";
 import { useRouter } from "next/navigation";
 import { useEffect, useSyncExternalStore, useState } from "react";
-
-/** Storage key prefix for persisted WebAuthn credential IDs per user. */
-const CREDENTIAL_STORAGE_PREFIX = "biometrics_cred_ids_";
 
 /** Subscribe to localStorage changes (cross-tab via storage event). */
 const subscribeToStorage = (callback: () => void) => {
@@ -64,15 +62,17 @@ export default function DashboardPage() {
     }
   }, [authLoading, isAuthenticated, router]);
 
-  // Check WebAuthn credential registration status (derived from localStorage)
-  const storageKey = `${CREDENTIAL_STORAGE_PREFIX}${email ?? ""}`;
+  // Derive the storage key for this user's WebAuthn credential IDs.
+  const credStorageKey = `${WEBAUTHN_CRED_IDS_PREFIX}${email ?? ""}`;
+
+  // Track WebAuthn credential registration status via localStorage.
   const webAuthnRegistered = useSyncExternalStore(
     subscribeToStorage,
     () => {
       if (isNative || !email) return false;
-      return !!localStorage.getItem(storageKey);
+      return !!localStorage.getItem(credStorageKey);
     },
-    () => false, // server snapshot
+    () => false,
   );
 
   // Show nothing while auth state is loading (matches server render)
@@ -80,7 +80,7 @@ export default function DashboardPage() {
     return null;
   }
 
-  // Determine biometric status
+  // Determine biometric status for the current runtime environment.
   const biometricAvailable = isNative ? canAuthenticate : webAuthnAvailable;
   const biometricEnabled = isNative ? isRegistered : webAuthnRegistered;
 
@@ -88,18 +88,13 @@ export default function DashboardPage() {
   // Native Biometric Handlers
   // -------------------------------------------------------------------------
 
-  /**
-   * Enables native biometric login for the current user.
-   */
   const handleEnableNativeBiometric = async () => {
     setError("");
     setMessage("");
     setIsLoading(true);
 
     try {
-      if (!userId) {
-        throw new Error("User information not available");
-      }
+      if (!userId) throw new Error("User information not available");
 
       const result = await enableBiometric(userId);
 
@@ -109,19 +104,12 @@ export default function DashboardPage() {
         setError(result.error ?? "Failed to register biometric credential");
       }
     } catch (err) {
-      setError(
-        err instanceof Error
-          ? err.message
-          : "Failed to register biometric credential",
-      );
+      setError(err instanceof Error ? err.message : "Failed to register biometric credential");
     } finally {
       setIsLoading(false);
     }
   };
 
-  /**
-   * Disables native biometric login.
-   */
   const handleDisableNativeBiometric = async () => {
     setError("");
     setMessage("");
@@ -131,11 +119,7 @@ export default function DashboardPage() {
       await disableBiometric();
       setMessage("Biometric credential removed successfully!");
     } catch (err) {
-      setError(
-        err instanceof Error
-          ? err.message
-          : "Failed to unregister biometric credential",
-      );
+      setError(err instanceof Error ? err.message : "Failed to unregister biometric credential");
     } finally {
       setIsLoading(false);
     }
@@ -145,18 +129,13 @@ export default function DashboardPage() {
   // WebAuthn Handlers
   // -------------------------------------------------------------------------
 
-  /**
-   * Registers a new WebAuthn credential for the current user.
-   */
   const handleRegisterWebAuthn = async () => {
     setError("");
     setMessage("");
     setIsLoading(true);
 
     try {
-      if (!userId || !email) {
-        throw new Error("User information not available");
-      }
+      if (!userId || !email) throw new Error("User information not available");
 
       const challenge = generateRandomBuffer();
       const result = await registerBiometricCredential(
@@ -172,51 +151,37 @@ export default function DashboardPage() {
         keyAlias: result.credentialId,
       });
 
-      // Store credential ID locally
-      const storageKey = `${CREDENTIAL_STORAGE_PREFIX}${email}`;
-      const existing = localStorage.getItem(storageKey);
-      const credIds = existing ? JSON.parse(existing) : [];
+      // Append the new credential ID to the per-user list in localStorage.
+      const existing = localStorage.getItem(credStorageKey);
+      const credIds: string[] = existing ? JSON.parse(existing) : [];
       credIds.push(result.credentialId);
-      localStorage.setItem(storageKey, JSON.stringify(credIds));
+      localStorage.setItem(credStorageKey, JSON.stringify(credIds));
 
       setMessage("WebAuthn credential registered successfully!");
     } catch (err) {
-      setError(
-        err instanceof Error
-          ? err.message
-          : "Failed to register biometric credential",
-      );
+      setError(err instanceof Error ? err.message : "Failed to register biometric credential");
     } finally {
       setIsLoading(false);
     }
   };
 
-  /**
-   * Removes all WebAuthn credentials for the current user.
-   */
   const handleUnregisterWebAuthn = async () => {
     setError("");
     setMessage("");
     setIsLoading(true);
 
     try {
-      if (!accessToken) {
-        throw new Error("Not authenticated");
-      }
+      if (!accessToken) throw new Error("Not authenticated");
 
-      await biometricApi.unregisterCredential(accessToken, undefined);
+      await biometricApi.unregisterCredential(accessToken);
 
       if (email) {
-        localStorage.removeItem(`${CREDENTIAL_STORAGE_PREFIX}${email}`);
+        localStorage.removeItem(credStorageKey);
       }
 
       setMessage("WebAuthn credential removed successfully!");
     } catch (err) {
-      setError(
-        err instanceof Error
-          ? err.message
-          : "Failed to unregister biometric credential",
-      );
+      setError(err instanceof Error ? err.message : "Failed to unregister biometric credential");
     } finally {
       setIsLoading(false);
     }
@@ -226,7 +191,6 @@ export default function DashboardPage() {
   // Common Handlers
   // -------------------------------------------------------------------------
 
-  /** Signs out the current user. */
   const handleLogout = () => {
     logout();
     router.push("/login");
@@ -309,19 +273,15 @@ export default function DashboardPage() {
               <p className="text-sm text-gray-600">
                 {biometricEnabled
                   ? isNative
-                    ? "Biometric authentication is enabled via your device\u2019s secure hardware. You can sign in using your fingerprint or face recognition."
-                    : "WebAuthn biometric authentication is enabled. You can sign in using your browser\u2019s platform authenticator."
+                    ? "Biometric authentication is enabled via your device’s secure hardware. You can sign in using your fingerprint or face recognition."
+                    : "WebAuthn biometric authentication is enabled. You can sign in using your browser’s platform authenticator."
                   : "Register your biometric credential to enable quick sign-in with your fingerprint or face recognition."}
               </p>
 
               <div className="flex gap-3">
                 {!biometricEnabled ? (
                   <button
-                    onClick={
-                      isNative
-                        ? handleEnableNativeBiometric
-                        : handleRegisterWebAuthn
-                    }
+                    onClick={isNative ? handleEnableNativeBiometric : handleRegisterWebAuthn}
                     disabled={isLoading}
                     className="inline-flex items-center gap-2 py-2 px-4 border border-transparent text-sm font-medium rounded-lg text-white bg-indigo-600 hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
                   >
@@ -342,11 +302,7 @@ export default function DashboardPage() {
                   </button>
                 ) : (
                   <button
-                    onClick={
-                      isNative
-                        ? handleDisableNativeBiometric
-                        : handleUnregisterWebAuthn
-                    }
+                    onClick={isNative ? handleDisableNativeBiometric : handleUnregisterWebAuthn}
                     disabled={isLoading}
                     className="inline-flex items-center gap-2 py-2 px-4 border border-red-300 text-sm font-medium rounded-lg text-red-600 bg-white hover:bg-red-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-red-500 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
                   >
@@ -362,7 +318,7 @@ export default function DashboardPage() {
                     {isNative
                       ? "Native biometric credential registered via secure hardware."
                       : "WebAuthn credential registered via platform authenticator."}{" "}
-                    {"You can now use the 'Biometric Login' button on the sign-in page."}
+                    {"You can now use the ‘Biometric Login’ button on the sign-in page."}
                   </p>
                 </div>
               )}

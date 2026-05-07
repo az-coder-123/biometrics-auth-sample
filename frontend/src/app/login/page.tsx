@@ -5,13 +5,14 @@
  *
  * Supports three authentication methods:
  * 1. Email/password login
- * 2. WebAuthn biometric login (desktop browser)
- * 3. Native biometric login (mobile app WebView)
+ * 2. WebAuthn biometric login (desktop browser — requires WebAuthn support)
+ * 3. Native biometric login (mobile app WebView — requires enrolled native keys)
  */
 
 import { useAuth } from "@/contexts/auth-context";
 import { useBiometric } from "@/contexts/biometric-context";
 import { biometricApi } from "@/lib/api-client";
+import { WEBAUTHN_CRED_IDS_PREFIX } from "@/lib/storage-keys";
 import {
   authenticateWithBiometric,
   isWebAuthnSupported,
@@ -19,9 +20,6 @@ import {
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { FormEvent, useState, useSyncExternalStore } from "react";
-
-/** Storage key for persisted WebAuthn credential IDs per user. */
-const CREDENTIAL_STORAGE_PREFIX = "biometrics_cred_ids_";
 
 export default function LoginPage() {
   const router = useRouter();
@@ -46,14 +44,16 @@ export default function LoginPage() {
   const [error, setError] = useState("");
   const [isLoading, setIsLoading] = useState(false);
 
-  // Determine if any biometric option should be shown
+  // Show native button only when the device confirms biometrics are enrolled.
   const showNativeBiometric = isNative && canAuthenticate && isRegistered;
+  // Show WebAuthn button whenever the browser supports the API.
   const showWebAuthnBiometric = !isNative && webAuthnAvailable;
   const showBiometric = showNativeBiometric || showWebAuthnBiometric;
 
-  /**
-   * Handles email/password form submission.
-   */
+  // -------------------------------------------------------------------------
+  // Email / password login
+  // -------------------------------------------------------------------------
+
   const handleSubmit = async (e: FormEvent) => {
     e.preventDefault();
     setError("");
@@ -69,12 +69,10 @@ export default function LoginPage() {
     }
   };
 
-  /**
-   * Handles native biometric authentication flow.
-   *
-   * Uses the BiometricBridge to sign a server challenge with
-   * the device's hardware-backed key.
-   */
+  // -------------------------------------------------------------------------
+  // Native biometric login
+  // -------------------------------------------------------------------------
+
   const handleNativeBiometricLogin = async () => {
     setError("");
     setIsLoading(true);
@@ -87,10 +85,6 @@ export default function LoginPage() {
         return;
       }
 
-      // Update AuthContext with the biometric token.
-      // Note: native verify returns accessToken; userId/email come from
-      // the JWT payload or a separate /me endpoint. For now we decode
-      // what's available and redirect — the dashboard reads from context.
       setTokenFromBiometric({
         accessToken: result.accessToken,
         userId: result.userId ?? "",
@@ -104,39 +98,44 @@ export default function LoginPage() {
     }
   };
 
+  // -------------------------------------------------------------------------
+  // WebAuthn login
+  // -------------------------------------------------------------------------
+
   /**
-   * Handles WebAuthn biometric authentication flow (desktop browser).
-   *
-   * 1. Request challenge from server
-   * 2. Prompt user for biometric (fingerprint/face)
-   * 3. Send signed challenge to server for verification
-   * 4. Receive JWT token on success
+   * WebAuthn authentication flow:
+   * 1. Validate email is entered (credential IDs are keyed by email)
+   * 2. Request challenge from server
+   * 3. Look up stored credential IDs for this email
+   * 4. Prompt user for biometric via WebAuthn API
+   * 5. Send signed assertion to server for verification
+   * 6. Store received JWT and redirect to dashboard
    */
   const handleWebAuthnLogin = async () => {
     setError("");
+
+    if (!email) {
+      setError("Please enter your email address before using biometric login.");
+      return;
+    }
+
     setIsLoading(true);
 
     try {
-      // Step 1: Get challenge from server
       const { challenge } = await biometricApi.generateChallenge();
 
-      // Step 2: Look up stored credential IDs
       const storedCredIds = localStorage.getItem(
-        `${CREDENTIAL_STORAGE_PREFIX}${email}`,
+        `${WEBAUTHN_CRED_IDS_PREFIX}${email}`,
       );
       if (!storedCredIds) {
-        setError(
-          "No biometric credentials found. Please login with password first.",
-        );
+        setError("No biometric credentials found for this email. Please sign in with your password first, then enable biometric login from the dashboard.");
         setIsLoading(false);
         return;
       }
       const credentialIds = JSON.parse(storedCredIds) as string[];
 
-      // Step 3: Authenticate with biometric
       const result = await authenticateWithBiometric(challenge, credentialIds);
 
-      // Step 4: Verify with server
       const verifyResult = await biometricApi.verifySignature({
         credentialId: result.credentialId,
         signature: result.signature,
@@ -145,7 +144,6 @@ export default function LoginPage() {
         payload: challenge,
       });
 
-      // Step 5: Update AuthContext with the verified token
       setTokenFromBiometric({
         accessToken: verifyResult.accessToken,
         userId: verifyResult.userId,
@@ -159,6 +157,10 @@ export default function LoginPage() {
       setIsLoading(false);
     }
   };
+
+  // -------------------------------------------------------------------------
+  // Render
+  // -------------------------------------------------------------------------
 
   return (
     <div className="min-h-screen flex items-center justify-center bg-gray-50 px-4">
@@ -229,7 +231,6 @@ export default function LoginPage() {
             </div>
           </div>
 
-          {/* Submit Button */}
           <button
             type="submit"
             disabled={isLoading}
@@ -239,7 +240,7 @@ export default function LoginPage() {
           </button>
         </form>
 
-        {/* Biometric Login Divider */}
+        {/* Biometric Login */}
         {showBiometric && (
           <>
             <div className="relative">
@@ -254,11 +255,7 @@ export default function LoginPage() {
             </div>
 
             <button
-              onClick={
-                showNativeBiometric
-                  ? handleNativeBiometricLogin
-                  : handleWebAuthnLogin
-              }
+              onClick={showNativeBiometric ? handleNativeBiometricLogin : handleWebAuthnLogin}
               disabled={isLoading}
               className="w-full flex items-center justify-center gap-3 py-2 px-4 border border-gray-300 rounded-lg shadow-sm bg-white text-sm font-medium text-gray-700 hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
             >

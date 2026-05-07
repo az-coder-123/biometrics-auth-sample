@@ -14,6 +14,7 @@
  */
 
 import { authApi } from "@/lib/api-client";
+import { EMAIL_KEY, TOKEN_KEY, USER_ID_KEY } from "@/lib/storage-keys";
 import type { AuthState, LoginRequest, RegisterRequest } from "@/lib/types";
 import type { ReactNode } from "react";
 import {
@@ -49,14 +50,6 @@ interface AuthContextType extends AuthState {
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
-
-// ---------------------------------------------------------------------------
-// Storage Keys
-// ---------------------------------------------------------------------------
-
-const TOKEN_KEY = "biometrics_auth_token";
-const USER_ID_KEY = "biometrics_auth_user_id";
-const EMAIL_KEY = "biometrics_auth_email";
 
 // ---------------------------------------------------------------------------
 // useSyncExternalStore for Auth State

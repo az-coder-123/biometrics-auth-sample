@@ -106,12 +106,13 @@ async function callHandler<T>(
   handlerName: string,
   ...args: unknown[]
 ): Promise<T> {
-  if (!isNativeApp()) {
+  const bridge = window.flutter_inappwebview;
+  if (!bridge) {
     throw new Error(
       `Cannot call '${handlerName}': not running inside the mobile app WebView.`,
     );
   }
-  return window.flutter_inappwebview.callHandler(handlerName, ...args) as Promise<T>;
+  return bridge.callHandler(handlerName, ...args) as Promise<T>;
 }
 
 // ---------------------------------------------------------------------------

@@ -18,5 +18,10 @@ interface InAppWebViewBridge {
 }
 
 interface Window {
-  flutter_inappwebview: InAppWebViewBridge;
+  /**
+   * Injected by the Flutter InAppWebView plugin when the page runs inside
+   * the mobile app WebView. Absent in regular browsers — always guard with
+   * `isNativeApp()` before calling any handler.
+   */
+  flutter_inappwebview?: InAppWebViewBridge;
 }

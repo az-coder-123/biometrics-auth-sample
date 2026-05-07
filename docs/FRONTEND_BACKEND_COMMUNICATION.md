@@ -244,7 +244,7 @@ Supports two verification methods:
 
 ---
 
-#### `DELETE /api/biometric/unregister`
+#### `POST /api/biometric/unregister`
 
 Removes biometric credential(s) for the authenticated user.
 

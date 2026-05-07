@@ -3,15 +3,21 @@
 /**
  * Biometric context provider.
  *
- * Manages biometric authentication state (availability, registration status)
- * and provides methods for biometric registration, login, and unregistration.
- * Follows the flows documented in BIOMETRIC_WEB_INTEGRATION_GUIDE.md.
+ * Manages biometric authentication state and provides methods for
+ * biometric registration, login, and unregistration.
  *
- * Uses useSyncExternalStore for isNativeApp to avoid hydration mismatches.
+ * Two runtime modes are supported:
+ *   - Native (Flutter WebView) — uses BiometricBridge → device secure hardware
+ *   - Browser (WebAuthn)       — handled directly in the page components;
+ *                                this context only exposes `isNativeApp` so
+ *                                pages can branch their logic.
+ *
+ * Uses useSyncExternalStore for `isNativeApp` to avoid SSR hydration mismatches.
  */
 
 import { biometricApi } from "@/lib/api-client";
 import { BiometricBridge, isNativeApp } from "@/lib/biometric-bridge";
+import { TOKEN_KEY } from "@/lib/storage-keys";
 import type { ReactNode } from "react";
 import {
   createContext,
@@ -31,21 +37,21 @@ import {
 interface BiometricState {
   /** Whether running inside the mobile app WebView. */
   isNativeApp: boolean;
-  /** Whether the device supports biometric authentication. */
+  /** Whether the device supports biometric authentication (native only). */
   canAuthenticate: boolean;
-  /** Whether biometric keys have been registered on this device. */
+  /** Whether biometric keys have been registered on this device (native only). */
   isRegistered: boolean;
-  /** The type of biometric available (e.g., "fingerprint", "face"). */
+  /** The type of biometric available, e.g. "fingerprint" (native only). */
   biometricType: string | null;
-  /** Whether the context is still loading initial state. */
+  /** True while the initial native availability check is in progress. */
   loading: boolean;
 }
 
 /** Methods exposed by the biometric context. */
 interface BiometricContextType extends BiometricState {
-  /** Enables biometric login for the current user. */
+  /** Enables native biometric login for the given user. No-op in browser. */
   enableBiometric: (userId: string) => Promise<{ success: boolean; error?: string }>;
-  /** Authenticates the user via biometric and returns an access token. */
+  /** Authenticates via native biometric and returns an access token. No-op in browser. */
   loginWithBiometric: () => Promise<{
     success: boolean;
     error?: string;
@@ -53,9 +59,9 @@ interface BiometricContextType extends BiometricState {
     userId?: string;
     email?: string;
   }>;
-  /** Disables biometric login and removes keys. */
+  /** Disables native biometric login and removes keys. No-op in browser. */
   disableBiometric: () => Promise<void>;
-  /** Re-checks biometric availability and registration status. */
+  /** Re-checks native biometric availability and registration status. No-op in browser. */
   refreshStatus: () => Promise<void>;
 }
 
@@ -68,20 +74,20 @@ const BiometricContext = createContext<BiometricContextType | undefined>(
 );
 
 // ---------------------------------------------------------------------------
-// isNativeApp via useSyncExternalStore
+// useSyncExternalStore helpers for isNativeApp
 // ---------------------------------------------------------------------------
 
-/** Subscribe stub — native app status never changes at runtime. */
+/** Subscribe stub — native-app status never changes during a session. */
 function subscribeNative(_callback: () => void) {
   return () => {};
 }
 
-/** Client snapshot — reads the actual native app status. */
+/** Client snapshot — reads the actual bridge presence. */
 function getNativeSnapshot(): boolean {
   return isNativeApp();
 }
 
-/** Server snapshot — always false on server. */
+/** Server snapshot — always false; bridge is not available during SSR. */
 function getNativeServerSnapshot(): boolean {
   return false;
 }
@@ -90,33 +96,33 @@ function getNativeServerSnapshot(): boolean {
 // Provider
 // ---------------------------------------------------------------------------
 
-/**
- * Wraps the application and provides biometric state and methods.
- *
- * Automatically checks device support and key registration status on mount.
- * All operations follow the flows defined in BIOMETRIC_WEB_INTEGRATION_GUIDE.md.
- */
 export function BiometricProvider({ children }: { children: ReactNode }) {
-  // Use useSyncExternalStore for isNativeApp to avoid hydration mismatch
   const nativeApp = useSyncExternalStore(
     subscribeNative,
     getNativeSnapshot,
     getNativeServerSnapshot,
   );
 
-  // Async biometric state — only meaningful in native app context
-  const [asyncState, setAsyncState] = useState<{
-    canAuthenticate: boolean;
-    isRegistered: boolean;
-    biometricType: string | null;
-  }>({
+  const [asyncState, setAsyncState] = useState({
     canAuthenticate: false,
     isRegistered: false,
-    biometricType: null,
+    biometricType: null as string | null,
   });
 
-  /** Checks biometric availability and key registration status (native only). */
+  const [loading, setLoading] = useState(false);
+
+  // ---------------------------------------------------------------------------
+  // refreshStatus — native only
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Queries the native bridge for biometric availability and key status.
+   * Safe to call from any context — silently returns when not in native app.
+   */
   const refreshStatus = useCallback(async () => {
+    if (!isNativeApp()) return;
+
+    setLoading(true);
     try {
       const [available, keyStatus] = await Promise.all([
         BiometricBridge.checkAvailability(),
@@ -129,91 +135,94 @@ export function BiometricProvider({ children }: { children: ReactNode }) {
         biometricType: available.availableBiometrics?.[0] ?? null,
       });
     } catch {
-      // Keep current state on error
+      // Keep current state on bridge error
+    } finally {
+      setLoading(false);
     }
   }, []);
 
-  // Schedule async native biometric checks after initial mount render.
-  // Only fires when running inside the mobile WebView.
+  // Run initial native check after first render inside the WebView.
   useEffect(() => {
     if (!nativeApp) return;
-    const id = setTimeout(() => {
-      refreshStatus();
-    }, 0);
+    const id = setTimeout(refreshStatus, 0);
     return () => clearTimeout(id);
   }, [nativeApp, refreshStatus]);
 
+  // ---------------------------------------------------------------------------
+  // enableBiometric — native only
+  // ---------------------------------------------------------------------------
+
   /**
-   * Enables biometric login for the given user.
+   * Enrolls a biometric credential for the given user.
    *
-   * Flow: check availability → delete old keys → create new keys →
-   * register public key with backend.
+   * Flow: check availability → delete stale keys → create new key pair
+   *       (triggers biometric prompt) → register public key with backend.
    */
-  const enableBiometric = useCallback(
-    async (userId: string) => {
-      try {
-        // 1. Check availability
-        const available = await BiometricBridge.checkAvailability();
-        if (!available.canAuthenticate) {
-          return { success: false, error: "Biometric not available on this device" };
-        }
+  const enableBiometric = useCallback(async (userId: string) => {
+    if (!isNativeApp()) {
+      return { success: false, error: "Native biometric is only available inside the mobile app." };
+    }
 
-        // 2. Delete old keys if they exist
-        const keyStatus = await BiometricBridge.keyExists();
-        if (keyStatus.exists) {
-          await BiometricBridge.deleteKeys();
-        }
-
-        // 3. Create new key pair (prompts user for biometric)
-        const createResult = await BiometricBridge.createKeys(
-          null,
-          "Authenticate to enable biometric login",
-        );
-
-        if (!createResult.success || !createResult.publicKey) {
-          return {
-            success: false,
-            error: createResult.error ?? "Failed to create biometric keys",
-          };
-        }
-
-        // 4. Register public key with backend
-        try {
-          await biometricApi.registerCredential({
-            userId,
-            publicKey: createResult.publicKey,
-            keyAlias: createResult.keyAlias ?? undefined,
-          });
-
-          setAsyncState((prev) => ({
-            ...prev,
-            isRegistered: true,
-          }));
-          return { success: true };
-        } catch {
-          // Backend registration failed — clean up local keys
-          await BiometricBridge.deleteKeys();
-          return { success: false, error: "Registration failed. Please try again." };
-        }
-      } catch {
-        return { success: false, error: "An unexpected error occurred." };
+    try {
+      const available = await BiometricBridge.checkAvailability();
+      if (!available.canAuthenticate) {
+        return { success: false, error: "Biometric not available on this device." };
       }
-    },
-    [],
-  );
+
+      const keyStatus = await BiometricBridge.keyExists();
+      if (keyStatus.exists) {
+        await BiometricBridge.deleteKeys();
+      }
+
+      const createResult = await BiometricBridge.createKeys(
+        null,
+        "Authenticate to enable biometric login",
+      );
+
+      if (!createResult.success || !createResult.publicKey) {
+        return {
+          success: false,
+          error: createResult.error ?? "Failed to create biometric keys.",
+        };
+      }
+
+      try {
+        await biometricApi.registerCredential({
+          userId,
+          publicKey: createResult.publicKey,
+          keyAlias: createResult.keyAlias ?? undefined,
+        });
+
+        setAsyncState((prev) => ({ ...prev, isRegistered: true }));
+        return { success: true };
+      } catch {
+        // Backend registration failed — remove the newly created local keys
+        await BiometricBridge.deleteKeys();
+        return { success: false, error: "Registration failed. Please try again." };
+      }
+    } catch {
+      return { success: false, error: "An unexpected error occurred." };
+    }
+  }, []);
+
+  // ---------------------------------------------------------------------------
+  // loginWithBiometric — native only
+  // ---------------------------------------------------------------------------
 
   /**
-   * Authenticates the user via biometric.
+   * Authenticates the user via the native biometric bridge.
    *
-   * Flow: request challenge from backend → sign with biometric →
-   * verify signature on backend → receive access token.
+   * Flow: request challenge from backend → sign with biometric
+   *       → verify signature on backend → return access token.
    */
   const loginWithBiometric = useCallback(async () => {
+    if (!isNativeApp()) {
+      return { success: false, error: "Native biometric is only available inside the mobile app." };
+    }
+
     try {
-      // 1. Get challenge from backend
       const { challenge } = await biometricApi.generateChallenge();
 
-      // 2. Sign challenge with biometric (prompts user)
       const signResult = await BiometricBridge.sign(
         challenge,
         null,
@@ -223,11 +232,10 @@ export function BiometricProvider({ children }: { children: ReactNode }) {
       if (!signResult.success || !signResult.signature) {
         return {
           success: false,
-          error: signResult.error ?? "Authentication failed",
+          error: signResult.error ?? "Authentication failed.",
         };
       }
 
-      // 3. Verify signature on backend
       const verifyResult = await biometricApi.verifySignature({
         signature: signResult.signature,
         publicKey: signResult.publicKey ?? "",
@@ -245,33 +253,39 @@ export function BiometricProvider({ children }: { children: ReactNode }) {
     }
   }, []);
 
+  // ---------------------------------------------------------------------------
+  // disableBiometric — native only
+  // ---------------------------------------------------------------------------
+
   /**
-   * Disables biometric login.
-   *
-   * Deletes local keys and notifies the backend.
+   * Removes biometric credentials from both the device and the backend.
+   * Safe to call from any context — silently returns when not in native app.
    */
   const disableBiometric = useCallback(async () => {
+    if (!isNativeApp()) return;
+
     try {
       await BiometricBridge.deleteKeys();
     } catch {
-      // Best-effort cleanup
+      // Best-effort local cleanup
     }
 
-    // Notify backend (fire-and-forget, user may not have a token)
+    // Notify backend (fire-and-forget — user may not have a valid token)
     try {
-      const token = localStorage.getItem("biometrics_auth_token");
+      const token = localStorage.getItem(TOKEN_KEY);
       if (token) {
         await biometricApi.unregisterCredential(token);
       }
     } catch {
-      // Silent — backend cleanup is optional
+      // Silent — backend credential removal is best-effort
     }
 
-    setAsyncState((prev: { canAuthenticate: boolean; isRegistered: boolean; biometricType: string | null }) => ({
-      ...prev,
-      isRegistered: false,
-    }));
+    setAsyncState((prev) => ({ ...prev, isRegistered: false }));
   }, []);
+
+  // ---------------------------------------------------------------------------
+  // Context value
+  // ---------------------------------------------------------------------------
 
   const value = useMemo(
     () => ({
@@ -279,13 +293,13 @@ export function BiometricProvider({ children }: { children: ReactNode }) {
       canAuthenticate: asyncState.canAuthenticate,
       isRegistered: asyncState.isRegistered,
       biometricType: asyncState.biometricType,
-      loading: false,
+      loading,
       enableBiometric,
       loginWithBiometric,
       disableBiometric,
       refreshStatus,
     }),
-    [nativeApp, asyncState, enableBiometric, loginWithBiometric, disableBiometric, refreshStatus],
+    [nativeApp, asyncState, loading, enableBiometric, loginWithBiometric, disableBiometric, refreshStatus],
   );
 
   return (
@@ -300,15 +314,13 @@ export function BiometricProvider({ children }: { children: ReactNode }) {
 // ---------------------------------------------------------------------------
 
 /**
- * Hook to access the biometric context.
- *
- * @returns Biometric context value with state and methods
- * @throws Error if used outside of BiometricProvider
+ * Returns the biometric context value.
+ * Must be used inside a BiometricProvider.
  */
 export function useBiometric(): BiometricContextType {
   const context = useContext(BiometricContext);
   if (!context) {
-    throw Error("useBiometric must be used within a BiometricProvider");
+    throw new Error("useBiometric must be used within a BiometricProvider");
   }
   return context;
 }
