@@ -11,6 +11,8 @@ dependencies:
   cupertino_icons: ^1.0.8
   # WebView with JavaScript bridge support
   flutter_inappwebview: ^6.1.5
+  # Check biometric availability (stable, official plugin)
+  local_auth: ^2.3.0
   # Hardware-backed biometric signing (Secure Enclave / StrongBox)
   biometric_signature: ^11.1.0
   # Secure storage for tokens and keys

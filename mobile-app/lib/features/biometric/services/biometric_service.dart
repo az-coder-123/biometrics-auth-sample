@@ -1,6 +1,8 @@
-import 'package:biometric_signature/biometric_signature.dart';
+import 'package:biometric_signature/biometric_signature.dart'
+    hide BiometricType;
 import 'package:flutter/services.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
+import 'package:local_auth/local_auth.dart';
 
 import '../../../core/config/app_config.dart';
 import '../../../core/utils/logger.dart';
@@ -17,6 +19,7 @@ import '../../../core/utils/logger.dart';
 /// `MOBILE_FRONTEND_INTEGRATION.md`.
 class BiometricService {
   static final BiometricSignature _biometric = BiometricSignature();
+  static final LocalAuthentication _localAuth = LocalAuthentication();
   static final FlutterSecureStorage _storage = FlutterSecureStorage();
 
   /// The key alias used when the caller passes null.
@@ -29,6 +32,8 @@ class BiometricService {
   // ===========================================================================
 
   /// Checks whether biometric authentication is available on this device.
+  ///Uses local_auth plugin for checking availability (more reliable)
+  /// and biometric_signature for cryptographic operations.
   ///
   /// Returns:
   /// ```json
@@ -39,32 +44,53 @@ class BiometricService {
     AppLogger.info('🔍 BiometricService: Checking biometric availability...');
 
     try {
-      final result = await _biometric.biometricAuthAvailable();
+      // Use local_auth for availability check (handles Activity context better)
+      final canCheckBiometrics = await _localAuth.canCheckBiometrics;
+      final isDeviceSupported = await _localAuth.isDeviceSupported();
 
       AppLogger.info(
-        '📱 BiometricService: Platform result:',
-        {
-          'canAuthenticate': result.canAuthenticate,
-          'hasEnrolledBiometrics': result.hasEnrolledBiometrics,
-          'availableBiometrics': result.availableBiometrics
-              ?.map((e) => e?.name)
-              .toList(),
-          'reason': result.reason,
-        }.toString(),
+        '📱 local_auth results: canCheck=$canCheckBiometrics, supported=$isDeviceSupported',
       );
+
+      if (!canCheckBiometrics || !isDeviceSupported) {
+        final response = {
+          'success': true,
+          'canAuthenticate': false,
+          'hasEnrolledBiometrics': false,
+          'availableBiometrics': <String>[],
+          'reason': 'Device does not support biometric authentication',
+        };
+        AppLogger.info('✅ BiometricService: Returning response: $response');
+        return response;
+      }
+
+      // Get available biometric types
+      final availableBiometrics = await _localAuth.getAvailableBiometrics();
+      AppLogger.info('📱 Available biometrics: $availableBiometrics');
+
+      final biometricTypes = availableBiometrics.map((type) {
+        switch (type) {
+          case BiometricType.face:
+            return 'face';
+          case BiometricType.fingerprint:
+            return 'fingerprint';
+          case BiometricType.iris:
+            return 'iris';
+          case BiometricType.strong:
+            return 'strong';
+          case BiometricType.weak:
+            return 'weak';
+        }
+      }).toList();
+
+      final hasEnrolled = availableBiometrics.isNotEmpty;
 
       final response = {
         'success': true,
-        'canAuthenticate': result.canAuthenticate ?? false,
-        'hasEnrolledBiometrics': result.hasEnrolledBiometrics ?? false,
-        // Filter null entries before mapping to avoid null strings in the list.
-        'availableBiometrics':
-            result.availableBiometrics
-                ?.where((e) => e != null)
-                .map((e) => e!.name)
-                .toList() ??
-            <String>[],
-        'reason': result.reason,
+        'canAuthenticate': hasEnrolled,
+        'hasEnrolledBiometrics': hasEnrolled,
+        'availableBiometrics': biometricTypes,
+        'reason': hasEnrolled ? null : 'No biometrics enrolled on this device',
       };
 
       AppLogger.info('✅ BiometricService: Returning response: $response');
@@ -80,6 +106,18 @@ class BiometricService {
         'hasEnrolledBiometrics': false,
         'availableBiometrics': <String>[],
         'reason': e.message ?? 'Failed to check biometric availability',
+      };
+    } catch (e) {
+      AppLogger.error(
+        '❌ BiometricService: Unexpected error checking availability',
+        e,
+      );
+      return {
+        'success': false,
+        'canAuthenticate': false,
+        'hasEnrolledBiometrics': false,
+        'availableBiometrics': <String>[],
+        'reason': 'Unexpected error: $e',
       };
     }
   }

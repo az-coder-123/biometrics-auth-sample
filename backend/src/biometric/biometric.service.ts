@@ -61,13 +61,17 @@ export class BiometricService {
     }
 
     // Check if credential already exists for this keyAlias
+    // If it exists, UPDATE it instead of throwing an error
     const existingCredential = await this.credentialModel
       .findOne({ userId, keyAlias: keyAlias ?? null, isActive: true })
       .exec();
 
     if (existingCredential) {
-      this.logger.warn(`Biometric credential already exists for user: ${userId}`);
-      throw new BadRequestException('Biometric credential already registered for this device');
+      this.logger.log(`Updating existing biometric credential for user: ${userId}`);
+      existingCredential.publicKey = publicKey;
+      existingCredential.isActive = true;
+      const updated = await existingCredential.save();
+      return updated;
     }
 
     const credential = new this.credentialModel({

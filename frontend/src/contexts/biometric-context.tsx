@@ -237,10 +237,17 @@ export function BiometricProvider({ children }: { children: ReactNode }) {
           hasEnrolledBiometrics: true,
         }));
         return { success: true };
-      } catch {
+      } catch (err) {
         // Backend registration failed — remove the newly created local keys
+        console.error('[BiometricContext] Backend registration failed:', err);
+        const errorMessage = err instanceof Error ? err.message : 'Unknown error';
+        console.error('[BiometricContext] Error details:', errorMessage);
+        
         await BiometricBridge.deleteKeys();
-        return { success: false, error: "Registration failed. Please try again." };
+        return { 
+          success: false, 
+          error: `Registration failed: ${errorMessage}. Please try again.`
+        };
       }
     } catch {
       return { success: false, error: "An unexpected error occurred." };
