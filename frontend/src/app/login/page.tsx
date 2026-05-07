@@ -6,21 +6,23 @@
  * Supports three authentication methods:
  * 1. Email/password login
  * 2. WebAuthn biometric login (desktop browser — requires WebAuthn support)
- * 3. Native biometric login (mobile app WebView — requires enrolled native keys)
+ * 3. Native biometric login (mobile app WebView — uses JS bridge to query
+ *    device biometrics; handles four sub-states: checking / enrolled /
+ *    not-enrolled / not-available)
  */
 
 import { useAuth } from "@/contexts/auth-context";
 import { useBiometric } from "@/contexts/biometric-context";
 import { biometricApi } from "@/lib/api-client";
+import { BiometricIcon, getBiometricLabel, getBiometricTypeName } from "@/lib/biometric-ui";
 import { WEBAUTHN_CRED_IDS_PREFIX } from "@/lib/storage-keys";
-import { BiometricIcon, getBiometricLabel } from "@/lib/biometric-ui";
 import {
   authenticateWithBiometric,
   isWebAuthnSupported,
 } from "@/lib/webauthn";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { FormEvent, useState, useSyncExternalStore } from "react";
+import { FormEvent, useEffect, useState, useSyncExternalStore } from "react";
 
 export default function LoginPage() {
   const router = useRouter();
@@ -30,7 +32,9 @@ export default function LoginPage() {
     canAuthenticate,
     isRegistered,
     biometricType,
+    loading: nativeChecking,
     loginWithBiometric,
+    refreshStatus,
   } = useBiometric();
 
   // Detect WebAuthn browser support without hydration mismatch.
@@ -46,11 +50,28 @@ export default function LoginPage() {
   const [error, setError] = useState("");
   const [isLoading, setIsLoading] = useState(false);
 
-  // Show native button only when the device confirms biometrics are enrolled.
-  const showNativeBiometric = isNative && canAuthenticate && isRegistered;
-  // Show WebAuthn button whenever the browser supports the API.
+  // When running inside the mobile WebView, refresh biometric status on every
+  // login page mount so the button reflects the current device state (e.g.
+  // after the user enabled biometrics on the Dashboard and returned here).
+  useEffect(() => {
+    if (isNative) refreshStatus();
+  }, [isNative, refreshStatus]);
+
+  // ---------------------------------------------------------------------------
+  // Native WebView biometric state derivation
+  //
+  //  nativeChecking              — bridge query in progress; show spinner
+  //  canAuthenticate && enrolled — device ready; show login button
+  //  canAuthenticate && !enrolled — key not created yet; show hint
+  //  !canAuthenticate            — device has no biometrics; show nothing
+  // ---------------------------------------------------------------------------
+  const nativeBiometricChecking   = isNative && nativeChecking;
+  const nativeBiometricReady      = isNative && !nativeChecking && canAuthenticate && isRegistered;
+  const nativeBiometricNotEnrolled = isNative && !nativeChecking && canAuthenticate && !isRegistered;
+  const showNativeSection = isNative && (nativeBiometricChecking || nativeBiometricReady || nativeBiometricNotEnrolled);
+
+  // Browser WebAuthn: show button whenever the browser supports the API.
   const showWebAuthnBiometric = !isNative && webAuthnAvailable;
-  const showBiometric = showNativeBiometric || showWebAuthnBiometric;
 
   // -------------------------------------------------------------------------
   // Email / password login
@@ -72,7 +93,7 @@ export default function LoginPage() {
   };
 
   // -------------------------------------------------------------------------
-  // Native biometric login
+  // Native biometric login (mobile WebView)
   // -------------------------------------------------------------------------
 
   const handleNativeBiometricLogin = async () => {
@@ -101,7 +122,7 @@ export default function LoginPage() {
   };
 
   // -------------------------------------------------------------------------
-  // WebAuthn login
+  // WebAuthn login (desktop browser)
   // -------------------------------------------------------------------------
 
   /**
@@ -242,8 +263,76 @@ export default function LoginPage() {
           </button>
         </form>
 
-        {/* Biometric Login */}
-        {showBiometric && (
+        {/* ------------------------------------------------------------------ */}
+        {/* Native WebView — biometric section                                  */}
+        {/* ------------------------------------------------------------------ */}
+        {showNativeSection && (
+          <>
+            <div className="relative">
+              <div className="absolute inset-0 flex items-center">
+                <div className="w-full border-t border-gray-300" />
+              </div>
+              <div className="relative flex justify-center text-sm">
+                <span className="px-2 bg-gray-50 text-gray-500">
+                  Or continue with
+                </span>
+              </div>
+            </div>
+
+            {/* Checking bridge — spinner */}
+            {nativeBiometricChecking && (
+              <div className="w-full flex items-center justify-center gap-3 py-2 px-4 border border-gray-200 rounded-lg bg-gray-50 text-sm text-gray-400">
+                <svg
+                  className="animate-spin h-4 w-4 text-gray-400"
+                  fill="none"
+                  viewBox="0 0 24 24"
+                >
+                  <circle
+                    className="opacity-25"
+                    cx="12" cy="12" r="10"
+                    stroke="currentColor"
+                    strokeWidth="4"
+                  />
+                  <path
+                    className="opacity-75"
+                    fill="currentColor"
+                    d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"
+                  />
+                </svg>
+                Checking biometric availability…
+              </div>
+            )}
+
+            {/* Enrolled — biometric login button */}
+            {nativeBiometricReady && (
+              <button
+                onClick={handleNativeBiometricLogin}
+                disabled={isLoading}
+                className="w-full flex items-center justify-center gap-3 py-2 px-4 border border-gray-300 rounded-lg shadow-sm bg-white text-sm font-medium text-gray-700 hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+              >
+                <BiometricIcon type={biometricType} />
+                {getBiometricLabel(biometricType, "login")}
+              </button>
+            )}
+
+            {/* Available but not enrolled — prompt to set up */}
+            {nativeBiometricNotEnrolled && (
+              <div className="w-full flex items-center gap-3 py-2 px-4 border border-amber-200 rounded-lg bg-amber-50 text-sm text-amber-700">
+                <BiometricIcon type={biometricType} className="w-4 h-4 shrink-0 text-amber-500" />
+                <span>
+                  {getBiometricTypeName(biometricType)} login is not set up.{" "}
+                  Sign in with your password, then enable it from your{" "}
+                  <strong>Dashboard → Biometric Settings</strong>.
+                </span>
+              </div>
+            )}
+          </>
+        )}
+
+        {/* ------------------------------------------------------------------ */}
+        {/* Browser WebAuthn — biometric login button                           */}
+        {/* ------------------------------------------------------------------ */}
+        {showWebAuthnBiometric && (
           <>
             <div className="relative">
               <div className="absolute inset-0 flex items-center">
@@ -257,14 +346,12 @@ export default function LoginPage() {
             </div>
 
             <button
-              onClick={showNativeBiometric ? handleNativeBiometricLogin : handleWebAuthnLogin}
+              onClick={handleWebAuthnLogin}
               disabled={isLoading}
               className="w-full flex items-center justify-center gap-3 py-2 px-4 border border-gray-300 rounded-lg shadow-sm bg-white text-sm font-medium text-gray-700 hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
             >
-              <BiometricIcon type={isNative ? biometricType : null} />
-              {isNative
-                ? getBiometricLabel(biometricType, "login")
-                : "WebAuthn Login"}
+              <BiometricIcon type={null} />
+              WebAuthn Login
             </button>
           </>
         )}

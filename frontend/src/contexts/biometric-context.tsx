@@ -112,7 +112,13 @@ export function BiometricProvider({ children }: { children: ReactNode }) {
     availableBiometrics: [] as string[],
   });
 
-  const [loading, setLoading] = useState(false);
+  // `checkedOnce` tracks whether the first bridge availability check has
+  // completed. We derive `loading` from `nativeApp && !checkedOnce` so that:
+  //   - In WebView: loading is true immediately (nativeApp=true, checkedOnce=false)
+  //   - After first check: loading becomes false (checkedOnce=true)
+  //   - In browser: loading stays false (nativeApp=false)
+  // This avoids calling setState directly in an effect body.
+  const [checkedOnce, setCheckedOnce] = useState(false);
 
   // ---------------------------------------------------------------------------
   // refreshStatus — native only
@@ -125,7 +131,6 @@ export function BiometricProvider({ children }: { children: ReactNode }) {
   const refreshStatus = useCallback(async () => {
     if (!isNativeApp()) return;
 
-    setLoading(true);
     try {
       const [available, keyStatus] = await Promise.all([
         BiometricBridge.checkAvailability(),
@@ -142,7 +147,7 @@ export function BiometricProvider({ children }: { children: ReactNode }) {
     } catch {
       // Keep current state on bridge error
     } finally {
-      setLoading(false);
+      setCheckedOnce(true);
     }
   }, []);
 
@@ -299,13 +304,13 @@ export function BiometricProvider({ children }: { children: ReactNode }) {
       isRegistered: asyncState.isRegistered,
       biometricType: asyncState.biometricType,
       availableBiometrics: asyncState.availableBiometrics,
-      loading,
+      loading: nativeApp && !checkedOnce,
       enableBiometric,
       loginWithBiometric,
       disableBiometric,
       refreshStatus,
     }),
-    [nativeApp, asyncState, loading, enableBiometric, loginWithBiometric, disableBiometric, refreshStatus],
+    [nativeApp, asyncState, checkedOnce, enableBiometric, loginWithBiometric, disableBiometric, refreshStatus],
   );
 
   return (
