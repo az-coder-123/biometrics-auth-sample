@@ -10,7 +10,7 @@
 
 import { useAuth } from "@/contexts/auth-context";
 import { useBiometric } from "@/contexts/biometric-context";
-import { biometricApi } from "@/lib/api-client";
+import { ApiError, biometricApi } from "@/lib/api-client";
 import { BiometricIcon, getBiometricLabel, getBiometricTypeName } from "@/lib/biometric-ui";
 import { WEBAUTHN_CRED_IDS_PREFIX } from "@/lib/storage-keys";
 import {
@@ -41,6 +41,7 @@ export default function DashboardPage() {
     loading: nativeChecking,
     enableBiometric,
     disableBiometric,
+    verifyRegistrationWithBackend,
   } = useBiometric();
 
   // Detect secure context and WebAuthn support without hydration mismatch.
@@ -66,6 +67,32 @@ export default function DashboardPage() {
       router.push("/login");
     }
   }, [authLoading, isAuthenticated, router]);
+
+  // On mount, reconcile local biometric state against the backend.
+  // This catches cases where credentials were removed directly from the DB
+  // (e.g. by an admin) without going through the app's unregister flow.
+  useEffect(() => {
+    if (!isAuthenticated || !accessToken) return;
+
+    if (isNative) {
+      // For native: verifyRegistrationWithBackend checks both local key AND backend.
+      verifyRegistrationWithBackend(accessToken).catch(() => {});
+    } else {
+      // For WebAuthn: check if the backend credential still exists.
+      biometricApi
+        .checkNativeCredential(accessToken)
+        .then(({ hasCredential }) => {
+          if (!hasCredential && email) {
+            localStorage.removeItem(credStorageKey);
+            window.dispatchEvent(new Event("storage"));
+          }
+        })
+        .catch(() => {});
+    }
+  // isNative, email, credStorageKey, verifyRegistrationWithBackend are all stable
+  // across the session — safe to omit from deps to avoid redundant re-runs.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isAuthenticated, accessToken]);
 
   // Derive the storage key for this user's WebAuthn credential IDs.
   const credStorageKey = `${WEBAUTHN_CRED_IDS_PREFIX}${email ?? ""}`;
@@ -202,13 +229,29 @@ export default function DashboardPage() {
     try {
       if (!accessToken) throw new Error("Not authenticated");
 
-      await biometricApi.unregisterCredential(accessToken);
+      let alreadyGone = false;
+      try {
+        await biometricApi.unregisterCredential(accessToken);
+      } catch (err) {
+        // 404 means the credential was already removed from the backend
+        // (e.g. by an admin). Treat it as a success and clean up locally.
+        if (err instanceof ApiError && err.status === 404) {
+          alreadyGone = true;
+        } else {
+          throw err;
+        }
+      }
 
       if (email) {
         localStorage.removeItem(credStorageKey);
+        window.dispatchEvent(new Event("storage"));
       }
 
-      setMessage("WebAuthn credential removed successfully!");
+      setMessage(
+        alreadyGone
+          ? "Biometric credential was already removed."
+          : "WebAuthn credential removed successfully!",
+      );
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to unregister biometric credential");
     } finally {

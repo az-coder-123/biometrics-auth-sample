@@ -13,9 +13,9 @@
 
 import { useAuth } from "@/contexts/auth-context";
 import { useBiometric } from "@/contexts/biometric-context";
-import { biometricApi } from "@/lib/api-client";
+import { ApiError, biometricApi } from "@/lib/api-client";
 import { BiometricIcon, getBiometricLabel, getBiometricTypeName } from "@/lib/biometric-ui";
-import { WEBAUTHN_CRED_IDS_PREFIX } from "@/lib/storage-keys";
+import { TOKEN_KEY, WEBAUTHN_CRED_IDS_PREFIX } from "@/lib/storage-keys";
 import {
     authenticateWithBiometric,
     isWebAuthnSupported,
@@ -89,7 +89,7 @@ export default function LoginPage() {
       // After successful password login, verify biometric registration
       // to sync state between backend and local device for multi-user scenarios
       if (isNative) {
-        const token = localStorage.getItem("auth_token");
+        const token = localStorage.getItem(TOKEN_KEY);
         if (token) {
           await verifyRegistrationWithBackend(token);
         }
@@ -186,7 +186,16 @@ export default function LoginPage() {
 
       router.push("/dashboard");
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Biometric login failed");
+      if (err instanceof ApiError && err.status === 404) {
+        // Credential no longer in backend — clean stale localStorage so
+        // the UI won't offer biometric login for this email going forward.
+        localStorage.removeItem(`${WEBAUTHN_CRED_IDS_PREFIX}${email}`);
+        setError(
+          "Biometric credential not found. Please sign in with your password and re-register biometrics from the dashboard.",
+        );
+      } else {
+        setError(err instanceof Error ? err.message : "Biometric login failed");
+      }
     } finally {
       setIsLoading(false);
     }

@@ -40,13 +40,21 @@ const API_BASE_URL = (() => {
 // Internal Helpers
 // ---------------------------------------------------------------------------
 
+/** API error that carries the HTTP status code alongside the message. */
+export class ApiError extends Error {
+  constructor(message: string, public readonly status: number) {
+    super(message);
+    this.name = "ApiError";
+  }
+}
+
 /**
  * Performs a fetch request with JSON handling and optional auth header.
  *
  * @param endpoint - API endpoint path (e.g., "/auth/login")
  * @param options - Fetch options including method, body, and token
  * @returns Parsed JSON response typed as T
- * @throws Error with message from the backend on failure
+ * @throws ApiError on non-2xx responses
  */
 async function request<T>(
   endpoint: string,
@@ -75,7 +83,10 @@ async function request<T>(
   const data = await response.json();
 
   if (!response.ok) {
-    throw new Error(data.message || `Request failed with status ${response.status}`);
+    throw new ApiError(
+      data.message || `Request failed with status ${response.status}`,
+      response.status,
+    );
   }
 
   // The backend wraps successful responses in { success, data, timestamp }
