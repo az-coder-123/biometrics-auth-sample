@@ -25,7 +25,7 @@ const CREDENTIAL_STORAGE_PREFIX = "biometrics_cred_ids_";
 
 export default function LoginPage() {
   const router = useRouter();
-  const { login } = useAuth();
+  const { login, setTokenFromBiometric } = useAuth();
   const {
     isNativeApp: isNative,
     canAuthenticate,
@@ -87,10 +87,15 @@ export default function LoginPage() {
         return;
       }
 
-      // Store the token from biometric verification
-      localStorage.setItem("biometrics_auth_token", result.accessToken);
-      // Note: userId/email would come from the verify response
-      // For now, redirect to dashboard
+      // Update AuthContext with the biometric token.
+      // Note: native verify returns accessToken; userId/email come from
+      // the JWT payload or a separate /me endpoint. For now we decode
+      // what's available and redirect — the dashboard reads from context.
+      setTokenFromBiometric({
+        accessToken: result.accessToken,
+        userId: result.userId ?? "",
+        email: result.email ?? "",
+      });
       router.push("/dashboard");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Biometric login failed");
@@ -140,10 +145,12 @@ export default function LoginPage() {
         payload: challenge,
       });
 
-      // Step 5: Store the token
-      localStorage.setItem("biometrics_auth_token", verifyResult.accessToken);
-      localStorage.setItem("biometrics_auth_user_id", verifyResult.userId);
-      localStorage.setItem("biometrics_auth_email", verifyResult.email);
+      // Step 5: Update AuthContext with the verified token
+      setTokenFromBiometric({
+        accessToken: verifyResult.accessToken,
+        userId: verifyResult.userId,
+        email: verifyResult.email,
+      });
 
       router.push("/dashboard");
     } catch (err) {

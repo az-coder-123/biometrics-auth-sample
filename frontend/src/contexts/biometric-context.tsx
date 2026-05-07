@@ -12,11 +12,12 @@ import { biometricApi } from "@/lib/api-client";
 import { BiometricBridge, isNativeApp } from "@/lib/biometric-bridge";
 import type { ReactNode } from "react";
 import {
-    createContext,
-    useCallback,
-    useContext,
-    useMemo,
-    useState,
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useState,
 } from "react";
 
 // ---------------------------------------------------------------------------
@@ -42,7 +43,13 @@ interface BiometricContextType extends BiometricState {
   /** Enables biometric login for the current user. */
   enableBiometric: (userId: string) => Promise<{ success: boolean; error?: string }>;
   /** Authenticates the user via biometric and returns an access token. */
-  loginWithBiometric: () => Promise<{ success: boolean; error?: string; accessToken?: string }>;
+  loginWithBiometric: () => Promise<{
+    success: boolean;
+    error?: string;
+    accessToken?: string;
+    userId?: string;
+    email?: string;
+  }>;
   /** Disables biometric login and removes keys. */
   disableBiometric: () => Promise<void>;
   /** Re-checks biometric availability and registration status. */
@@ -68,21 +75,30 @@ const BiometricContext = createContext<BiometricContextType | undefined>(
  * All operations follow the flows defined in BIOMETRIC_WEB_INTEGRATION_GUIDE.md.
  */
 export function BiometricProvider({ children }: { children: ReactNode }) {
-  const [state, setState] = useState<BiometricState>({
-    isNativeApp: false,
-    canAuthenticate: false,
-    isRegistered: false,
-    biometricType: null,
-    loading: true,
+  const [state, setState] = useState<BiometricState>(() => {
+    // SSR guard
+    if (typeof window === "undefined") {
+      return {
+        isNativeApp: false,
+        canAuthenticate: false,
+        isRegistered: false,
+        biometricType: null,
+        loading: true,
+      };
+    }
+    // Synchronous native check — if not in mobile WebView, no async work needed
+    const native = isNativeApp();
+    return {
+      isNativeApp: native,
+      canAuthenticate: false,
+      isRegistered: false,
+      biometricType: null,
+      loading: native, // only show loading if we need async native checks
+    };
   });
 
-  /** Checks biometric availability and key registration status. */
+  /** Checks biometric availability and key registration status (native only). */
   const refreshStatus = useCallback(async () => {
-    if (!isNativeApp()) {
-      setState((prev) => ({ ...prev, isNativeApp: false, loading: false }));
-      return;
-    }
-
     try {
       const [available, keyStatus] = await Promise.all([
         BiometricBridge.checkAvailability(),
@@ -101,10 +117,17 @@ export function BiometricProvider({ children }: { children: ReactNode }) {
     }
   }, []);
 
-  /** Initializes state on mount. */
-  useMemo(() => {
-    refreshStatus();
-  }, [refreshStatus]);
+  // Schedule async native biometric checks after initial mount render.
+  // Only fires when running inside the mobile WebView (state.isNativeApp === true).
+  // setTimeout breaks the synchronous call chain so React Compiler doesn't
+  // flag the async setState as a synchronous cascading render.
+  useEffect(() => {
+    if (!state.isNativeApp) return;
+    const id = setTimeout(() => {
+      refreshStatus();
+    }, 0);
+    return () => clearTimeout(id);
+  }, []);
 
   /**
    * Enables biometric login for the given user.
@@ -197,6 +220,8 @@ export function BiometricProvider({ children }: { children: ReactNode }) {
       return {
         success: true,
         accessToken: verifyResult.accessToken,
+        userId: verifyResult.userId,
+        email: verifyResult.email,
       };
     } catch {
       return { success: false, error: "Login failed. Please try again." };

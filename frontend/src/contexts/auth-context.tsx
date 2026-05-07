@@ -30,6 +30,17 @@ interface AuthContextType extends AuthState {
   login: (data: LoginRequest) => Promise<void>;
   /** Clears the authentication state and stored token. */
   logout: () => void;
+  /**
+   * Stores a token obtained from biometric verification.
+   *
+   * Used by both WebAuthn and native biometric login flows to update
+   * the auth context state after successful signature verification.
+   */
+  setTokenFromBiometric: (data: {
+    accessToken: string;
+    userId: string;
+    email: string;
+  }) => void;
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
@@ -130,6 +141,24 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     });
   }, []);
 
+  /** Stores a token from biometric verification into context and localStorage. */
+  const setTokenFromBiometric = useCallback(
+    (data: { accessToken: string; userId: string; email: string }) => {
+      localStorage.setItem(TOKEN_KEY, data.accessToken);
+      localStorage.setItem(USER_ID_KEY, data.userId);
+      localStorage.setItem(EMAIL_KEY, data.email);
+
+      setState({
+        isAuthenticated: true,
+        accessToken: data.accessToken,
+        userId: data.userId,
+        email: data.email,
+        isLoading: false,
+      });
+    },
+    [],
+  );
+
   /** Clears the authentication state and stored token. */
   const logout = useCallback(() => {
     localStorage.removeItem(TOKEN_KEY);
@@ -146,8 +175,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const value = useMemo(
-    () => ({ ...state, register, login, logout }),
-    [state, register, login, logout]
+    () => ({ ...state, register, login, logout, setTokenFromBiometric }),
+    [state, register, login, logout, setTokenFromBiometric]
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
