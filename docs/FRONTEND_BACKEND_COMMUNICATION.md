@@ -223,7 +223,7 @@ Used for state synchronization in multi-user scenarios on the same device.
 ```json
 {
   "hasCredential": true,
-  "keyAlias": "biometrics_auth_default"
+  "keyAlias": "biometrics_auth_69fc3e4fafbf7e7149dc9fcf"
 }
 ```
 
@@ -232,7 +232,7 @@ Used for state synchronization in multi-user scenarios on the same device.
 > whether the **currently logged-in user** owns a credential in the backend,
 > ensuring the UI displays the correct registration state.
 >
-> **Frontend Usage**: Called after password login to sync `isRegistered` state:
+> **Frontend Usage**: Called on dashboard mount and after password login to sync `isRegistered` state:
 > ```typescript
 > const deviceHasKey = await BiometricBridge.keyExists();
 > const backendStatus = await biometricApi.checkNativeCredential(token);
@@ -777,16 +777,38 @@ All errors follow the NestJS standard format:
 
 ### Frontend Error Handling
 
-The `api-client.ts` wraps all fetch calls and throws descriptive errors:
+`api-client.ts` wraps all fetch calls and throws `ApiError` — a subclass of
+`Error` that exposes the HTTP status code alongside the message:
 
 ```typescript
-if (!response.ok) {
-  const errorData = await response.json();
-  throw new Error(errorData.message || 'Request failed');
+// api-client.ts
+export class ApiError extends Error {
+  constructor(message: string, public readonly status: number) {
+    super(message);
+    this.name = "ApiError";
+  }
+}
+
+// thrown on every non-2xx response:
+throw new ApiError(data.message || `Request failed with status ${response.status}`, response.status);
+```
+
+Callers can distinguish specific HTTP errors without matching on message strings:
+
+```typescript
+try {
+  await biometricApi.unregisterCredential(token);
+} catch (err) {
+  if (err instanceof ApiError && err.status === 404) {
+    // Credential already gone — clean up local state
+    localStorage.removeItem(credStorageKey);
+  } else {
+    throw err; // Unexpected error — re-throw for the UI banner
+  }
 }
 ```
 
-Pages catch errors and display them in a styled error banner:
+Pages display unhandled errors in a styled error banner:
 
 ```tsx
 {error && (

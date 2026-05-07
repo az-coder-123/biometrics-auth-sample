@@ -22,7 +22,8 @@ This document describes the communication architecture between the **Flutter mob
 │  │  JsBridgeService  │───▶  - deleteKeys()              │ │
 │  │  (registers JS    │    │  - deleteAllKeys()          │ │
 │  │   handlers)       │    │  - simplePrompt()           │ │
-│  └────────┬──────────┘    └─────────────────────────────┘ │
+│  └────────┬──────────┘    │  - setCurrentUser()         │ │
+│           │               └─────────────────────────────┘ │
 │           │ JS Bridge                                     │
 └───────────┼───────────────────────────────────────────────┘
             │ window.flutter_inappwebview.callHandler()
@@ -44,8 +45,10 @@ This document describes the communication architecture between the **Flutter mob
 │  │  - deleteKeys()   │    │  Methods:                   │ │
 │  │  - deleteAllKeys()│    │  - enableBiometric(userId)  │ │
 │  │  - simplePrompt() │    │  - loginWithBiometric()     │ │
-│  └──────────────────┘     │  - disableBiometric()       │ │
-│                           │  - refreshStatus()          │ │
+│  │  - setCurrentUser │    │  - disableBiometric()       │ │
+│  └──────────────────┘     │  - refreshStatus()          │ │
+│                           │  - verifyRegistration       │ │
+│                           │    WithBackend()            │ │
 │  ┌───────────────────┐    └─────────────────────────────┘ │
 │  │  BiometricIcon    │                                    │
 │  │  getBiometricLabel│    ┌─────────────────────────────┐ │
@@ -103,10 +106,11 @@ The `JsBridgeService` registers the following handlers on the `InAppWebViewContr
 | 6 | `biometricDeleteKeys` | `keyAlias?` | `deleteKeys()` | Delete specific key |
 | 7 | `biometricDeleteAllKeys` | _(none)_ | `deleteAllKeys()` | Delete all keys |
 | 8 | `biometricSimplePrompt` | `message`, `reason?` | `simplePrompt()` | Prompt without crypto |
-| 9 | `LogBridge.info` | `{message}` | Logger | Forward info log |
-| 10 | `LogBridge.warn` | `{message}` | Logger | Forward warning log |
-| 11 | `LogBridge.error` | `{message}` | Logger | Forward error log |
-| 12 | `LogBridge.debug` | `{message}` | Logger | Forward debug log |
+| 9 | `setCurrentUser` | `userId` | `setCurrentUser()` | Scope key operations to this user |
+| 10 | `LogBridge.info` | `{message}` | Logger | Forward info log |
+| 11 | `LogBridge.warn` | `{message}` | Logger | Forward warning log |
+| 12 | `LogBridge.error` | `{message}` | Logger | Forward error log |
+| 13 | `LogBridge.debug` | `{message}` | Logger | Forward debug log |
 
 ---
 
@@ -175,6 +179,22 @@ component. It is a no-op when not in a native WebView. It is called:
    state (e.g. after the user enrolled biometrics on the Dashboard and returned
    to the login page).
 
+### `verifyRegistrationWithBackend(token)` Contract
+
+Cross-checks the local key against the backend credential to catch stale state
+(e.g. credentials deleted directly from the DB by an admin).
+
+**Native app**: calls `BiometricBridge.keyExists()` AND `biometricApi.checkNativeCredential(token)` in parallel.
+`isRegistered` is set to `true` only when **both** return positive.
+
+**Browser (WebAuthn)**: not called from the context; the Dashboard page handles
+WebAuthn state sync directly by calling `biometricApi.checkNativeCredential(token)` on mount
+and clearing `localStorage` if the backend no longer has the credential.
+
+**When called**:
+- Dashboard page — on mount, for both native and WebAuthn environments
+- Login page — after successful password login (native only)
+
 ---
 
 ## Data Flow: Biometric Registration
@@ -195,6 +215,12 @@ This flow registers a new biometric credential for the currently authenticated u
       │                  ├────────────────────▶│                  │
       │                  │◀────────────────────┤                  │
       │                  │  {canAuthenticate}  │                  │
+      │                  │                     │                  │
+      │                  │ setCurrentUser      │                  │
+      │                  │ (userId)            │                  │
+      │                  ├────────────────────▶│                  │
+      │                  │◀────────────────────┤                  │
+      │                  │  {success: true}    │                  │
       │                  │                     │                  │
       │                  │ keyExists()         │                  │
       │                  ├────────────────────▶│                  │
@@ -229,18 +255,20 @@ This flow registers a new biometric credential for the currently authenticated u
 
 ### Step-by-Step
 
-1. **Check Availability** — The frontend calls `BiometricBridge.checkAvailability()` which triggers the `biometricAuthAvailable` handler. The native side checks `local_auth` and returns `canAuthenticate`, `hasEnrolledBiometrics`, and `availableBiometrics`.
+1. **Set Current User** — `BiometricBridge.setCurrentUser(userId)` calls the `setCurrentUser` handler. The native side persists the `userId` in secure storage so all subsequent key operations (create, sign, delete) are namespaced to this user. This is the first step to ensure key isolation when multiple users share the same device.
 
-2. **Check Existing Keys** — `BiometricBridge.keyExists()` calls the `biometricKeyExists` handler. The native side checks the secure keystore (Android Keystore / iOS Keychain) for existing key pairs.
+2. **Check Availability** — The frontend calls `BiometricBridge.checkAvailability()` which triggers the `biometricAuthAvailable` handler. The native side checks `local_auth` and returns `canAuthenticate`, `hasEnrolledBiometrics`, and `availableBiometrics`.
 
-3. **Delete Old Keys** (if they exist) — `BiometricBridge.deleteKeys()` removes stale credentials before creating new ones.
+3. **Check Existing Keys** — `BiometricBridge.keyExists()` calls the `biometricKeyExists` handler. The native side checks the secure keystore (Android Keystore / iOS Keychain) for existing key pairs belonging to the current user.
 
-4. **Create Key Pair** — `BiometricBridge.createKeys()` triggers `biometricCreateKeys`, which:
+4. **Delete Old Keys** (if they exist) — `BiometricBridge.deleteKeys()` removes stale credentials before creating new ones.
+
+5. **Create Key Pair** — `BiometricBridge.createKeys()` triggers `biometricCreateKeys`, which:
    - Generates an ECDSA P-256 key pair in the secure hardware
-   - Stores the private key in Android Keystore / iOS Keychain (requires biometric to access)
+   - Stores the private key under alias `biometrics_auth_{userId}` in Android Keystore / iOS Keychain
    - Returns the **public key** (Base64-encoded) and **key alias**
 
-5. **Register with Backend** — The frontend sends `POST /biometric/register` with `{ userId, publicKey, keyAlias }`. The backend stores this credential in MongoDB for later verification.
+6. **Register with Backend** — The frontend sends `POST /biometric/register` with `{ userId, publicKey, keyAlias }`. The backend stores this credential in MongoDB for later verification.
 
 ---
 
@@ -285,6 +313,12 @@ This flow authenticates a user without a password, using only their biometric cr
       │◀─────────────────┤                     │                  │
       │ {success,        │                     │                  │
       │  accessToken}    │                     │                  │
+      │                  │                     │                  │
+      │                  │ setCurrentUser      │                  │
+      │                  │ (verifyResult.      │                  │
+      │                  │  userId)            │                  │
+      │                  ├────────────────────▶│                  │
+      │                  │◀────────────────────┤                  │
       │                  │                     │                  │
       │ store token in   │                     │                  │
       │ localStorage     │                     │                  │
@@ -338,7 +372,9 @@ The button label and icon adapt to `biometricType` using helpers from
    - Validates the challenge matches and hasn't expired
    - Returns `{ accessToken, userId, email }` on success
 
-4. **Store Token & Navigate** — The frontend stores the JWT access token in `localStorage` and redirects to the Dashboard.
+4. **Sync User Context** — After a successful verify, `BiometricBridge.setCurrentUser(userId)` is called with the confirmed `userId` from the backend response. This ensures subsequent biometric operations (e.g. disable from the Dashboard) use the correct user-scoped key.
+
+5. **Store Token & Navigate** — The frontend stores the JWT access token in `localStorage` and redirects to the Dashboard.
 
 ---
 
@@ -451,11 +487,12 @@ The following table shows how TypeScript interfaces in the frontend map to Dart 
 | File | Responsibility |
 |---|---|
 | `frontend/src/types/flutter-inappwebview.d.ts` | TypeScript declarations for `window.flutter_inappwebview?` (optional) |
-| `frontend/src/lib/biometric-bridge.ts` | Typed API for calling native JS bridge handlers |
+| `frontend/src/lib/biometric-bridge.ts` | Typed API for calling native JS bridge handlers, including `setCurrentUser` |
+| `frontend/src/lib/api-client.ts` | Fetch wrapper; exports `ApiError` (carries HTTP `status`) for typed 404 handling |
 | `frontend/src/lib/biometric-ui.tsx` | `BiometricIcon`, `getBiometricLabel`, `getBiometricTypeName` UI helpers |
-| `frontend/src/contexts/biometric-context.tsx` | React context: state + `refreshStatus` / `enableBiometric` / `loginWithBiometric` / `disableBiometric` |
-| `frontend/src/app/login/page.tsx` | Login UI — 4-state native WebView path + WebAuthn path |
-| `frontend/src/app/dashboard/page.tsx` | Dashboard with biometric credential management |
+| `frontend/src/contexts/biometric-context.tsx` | React context: state + `refreshStatus` / `enableBiometric` / `loginWithBiometric` / `disableBiometric` / `verifyRegistrationWithBackend` |
+| `frontend/src/app/login/page.tsx` | Login UI — 4-state native WebView path + WebAuthn path; clears stale localStorage on 404 |
+| `frontend/src/app/dashboard/page.tsx` | Dashboard with biometric credential management; syncs backend state on mount |
 | `frontend/src/app/layout.tsx` | Root layout wrapping app with `BiometricProvider` |
 
 ### Backend (NestJS)

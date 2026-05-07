@@ -286,34 +286,73 @@ As of the latest update, the backend **allows multiple biometric credentials per
 - Revoke specific credentials (set `isActive: false`)
 - Set a maximum number of active credentials per user
 
-### 2. State Verification for Multi-User Scenarios
+### 2. Per-User Key Isolation (Multi-User on Same Device)
 
-When multiple users share the same device (common in testing environments), the device's local storage may contain biometric keys from different users. To prevent incorrect UI state:
+When multiple users share the same device the native keystore and secure storage
+are both scoped to the **active user** via a two-part mechanism.
 
-**Problem**: User A enables biometric → logs out → User B logs in with password only
-- Device still has User A's key in secure storage
-- `BiometricBridge.keyExists()` returns `true`
-- UI incorrectly shows "Disable Biometric Login" for User B
+#### 2a. Per-User Key Alias
 
-**Solution**: Backend verification endpoint
-```typescript
-// After password login (frontend)
-const deviceHasKey = await BiometricBridge.keyExists();
-const backendStatus = await biometricApi.checkNativeCredential(token);
+The native `BiometricService` derives the keystore alias from the user ID:
 
-// Only show "Disable" if BOTH conditions are true
-const isRegistered = deviceHasKey.exists && backendStatus.hasCredential;
+```
+biometrics_auth_{userId}   ← e.g. "biometrics_auth_69fc3e4f..."
 ```
 
-**Backend Implementation**:
-- Endpoint: `POST /api/biometric/check`
-- Query: Find active credential for `userId` with non-null `keyAlias`
-- Returns: `{ hasCredential: boolean, keyAlias?: string }`
+Storage keys are namespaced in the same way:
 
-**When Called**:
-- After successful password login (in `LoginPage.handleSubmit`)
-- On dashboard mount (if user already authenticated)
-- After biometric registration/unregistration
+| Storage Key | Value |
+|---|---|
+| `biometric_credential_id_{userId}` | The key alias for this user |
+| `biometric_public_key_{userId}` | The public key for this user |
+
+**Legacy fallback**: Devices enrolled before this change still have entries under
+the old flat keys (`biometric_credential_id`, `biometric_public_key`). The service
+reads the user-namespaced key first; if absent it falls back to the legacy key so
+existing enrollments continue to work without re-enrollment.
+
+#### 2b. `setCurrentUser` Bridge Call
+
+The frontend must inform the native layer which user is active **before** any
+key operation. This is done via `BiometricBridge.setCurrentUser(userId)`:
+
+```typescript
+// Called in three places:
+// 1. biometric-context.tsx → enableBiometric() — before createKeys()
+// 2. biometric-context.tsx → loginWithBiometric() — after successful verify
+// 3. auth-context.tsx → login() / register() — after password / register login
+await BiometricBridge.setCurrentUser(userId);
+```
+
+The native handler persists the `userId` in `AppConfig.userIdStorageKey`
+(`auth_user_id`) so the value survives app restarts.
+
+#### 2c. Backend State Verification
+
+Local key presence alone cannot prove the credential is still valid in the
+backend (e.g. an admin may have deleted it). Both the login page and the
+dashboard mount verify state against the backend on every load:
+
+```typescript
+// Native (biometric-context.verifyRegistrationWithBackend)
+const [keyStatus, backendStatus] = await Promise.all([
+  BiometricBridge.keyExists(),
+  biometricApi.checkNativeCredential(token),
+]);
+const isRegistered = keyStatus.exists && backendStatus.hasCredential;
+
+// WebAuthn (dashboard mount effect)
+const { hasCredential } = await biometricApi.checkNativeCredential(token);
+if (!hasCredential) localStorage.removeItem(credStorageKey);
+```
+
+**Backend endpoint**: `POST /api/biometric/check`  
+Query: find active credential for `userId` with non-null `keyAlias`  
+Returns: `{ hasCredential: boolean, keyAlias?: string }`
+
+**When called**:
+- Login page — after successful password login (native only)
+- Dashboard — on every mount (native + WebAuthn)
 
 ### 3. Challenge Replay Prevention
 
@@ -449,11 +488,18 @@ biometric: {
 
 **File**: `mobile-app/lib/features/biometric/services/biometric_service.dart`
 
+Key aliases are derived from the active user ID at runtime:
+
 ```dart
-static const String defaultKeyAlias = 'biometrics_auth_default';
-static const int rsaKeySize = 2048;
-static const AndroidSignatureAlgorithm algorithm = 
-    AndroidSignatureAlgorithm.SHA256withRSA;
+// Per-user alias (primary)
+String _aliasForUser(String userId) =>
+    '${AppConfig.biometricKeyAliasPrefix}$userId';
+// → e.g. 'biometrics_auth_69fc3e4f...'
+
+// Legacy fallback alias (used only when no userId is set)
+static const String _defaultKeyAlias =
+    '${AppConfig.biometricKeyAliasPrefix}default';
+// → 'biometrics_auth_default'
 ```
 
 ### Frontend (Next.js)
