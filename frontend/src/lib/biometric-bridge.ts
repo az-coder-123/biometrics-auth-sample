@@ -91,6 +91,63 @@ export function isNativeApp(): boolean {
   );
 }
 
+const BRIDGE_READY_EVENT = "flutterInAppWebViewPlatformReady";
+let bridgeReady = false;
+let bridgeReadyPromise: Promise<void> | null = null;
+
+/**
+ * Checks whether the WebView bridge has finished platform initialization.
+ */
+export function isBridgeReady(): boolean {
+  if (bridgeReady) return true;
+  if (typeof window === "undefined") return false;
+  if (window.flutter_inappwebview?._platformReady === true) {
+    bridgeReady = true;
+    return true;
+  }
+  return false;
+}
+
+/**
+ * Waits for the WebView bridge to signal readiness.
+ * Resolves after a short timeout to avoid blocking forever.
+ */
+export function waitForBridgeReady(timeoutMs: number = 1500): Promise<void> {
+  if (typeof window === "undefined") return Promise.resolve();
+  if (isBridgeReady()) return Promise.resolve();
+  if (bridgeReadyPromise) return bridgeReadyPromise;
+
+  bridgeReadyPromise = new Promise((resolve) => {
+    let timerId: number | null = null;
+
+    const onReady = () => {
+      bridgeReady = true;
+      cleanup();
+      resolve();
+    };
+
+    const cleanup = () => {
+      window.removeEventListener(BRIDGE_READY_EVENT, onReady);
+      if (timerId !== null) {
+        window.clearTimeout(timerId);
+      }
+      bridgeReadyPromise = null;
+    };
+
+    timerId = window.setTimeout(() => {
+      if (window.flutter_inappwebview?.callHandler) {
+        bridgeReady = true;
+      }
+      cleanup();
+      resolve();
+    }, timeoutMs);
+
+    window.addEventListener(BRIDGE_READY_EVENT, onReady, { once: true });
+  });
+
+  return bridgeReadyPromise;
+}
+
 // ---------------------------------------------------------------------------
 // Call Helper
 // ---------------------------------------------------------------------------
@@ -106,12 +163,21 @@ async function callHandler<T>(
   handlerName: string,
   ...args: unknown[]
 ): Promise<T> {
-  const bridge = window.flutter_inappwebview;
-  if (!bridge) {
+  if (!isNativeApp()) {
     throw new Error(
       `Cannot call '${handlerName}': not running inside the mobile app WebView.`,
     );
   }
+
+  await waitForBridgeReady();
+
+  const bridge = window.flutter_inappwebview;
+  if (!bridge?.callHandler) {
+    throw new Error(
+      `Cannot call '${handlerName}': native bridge is not ready.`,
+    );
+  }
+
   return bridge.callHandler(handlerName, ...args) as Promise<T>;
 }
 

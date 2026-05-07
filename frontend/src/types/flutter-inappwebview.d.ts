@@ -15,6 +15,9 @@ interface InAppWebViewBridge {
    * @returns Promise resolving to the handler's return value
    */
   callHandler(handlerName: string, ...args: unknown[]): Promise<unknown>;
+
+  /** True once the native bridge has finished platform initialization. */
+  _platformReady?: boolean;
 }
 
 interface Window {

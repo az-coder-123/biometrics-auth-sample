@@ -25,8 +25,8 @@ import {
   useContext,
   useEffect,
   useMemo,
-  useSyncExternalStore,
   useState,
+  useSyncExternalStore,
 } from "react";
 
 // ---------------------------------------------------------------------------
@@ -39,6 +39,8 @@ interface BiometricState {
   isNativeApp: boolean;
   /** Whether the device supports biometric authentication (native only). */
   canAuthenticate: boolean;
+  /** Whether biometrics are enrolled on the device (native only). */
+  hasEnrolledBiometrics: boolean;
   /** Whether biometric keys have been registered on this device (native only). */
   isRegistered: boolean;
   /** The primary biometric type available, e.g. "fingerprint" | "face" | "iris" (native only). */
@@ -80,8 +82,11 @@ const BiometricContext = createContext<BiometricContextType | undefined>(
 // ---------------------------------------------------------------------------
 
 /** Subscribe stub — native-app status never changes during a session. */
-function subscribeNative(_callback: () => void) {
-  return () => {};
+function subscribeNative(callback: () => void) {
+  if (typeof window === "undefined") return () => {};
+  const handler = () => callback();
+  window.addEventListener("flutterInAppWebViewPlatformReady", handler);
+  return () => window.removeEventListener("flutterInAppWebViewPlatformReady", handler);
 }
 
 /** Client snapshot — reads the actual bridge presence. */
@@ -107,6 +112,7 @@ export function BiometricProvider({ children }: { children: ReactNode }) {
 
   const [asyncState, setAsyncState] = useState({
     canAuthenticate: false,
+    hasEnrolledBiometrics: false,
     isRegistered: false,
     biometricType: null as string | null,
     availableBiometrics: [] as string[],
@@ -140,6 +146,7 @@ export function BiometricProvider({ children }: { children: ReactNode }) {
       const biometrics = available.availableBiometrics ?? [];
       setAsyncState({
         canAuthenticate: available.canAuthenticate,
+        hasEnrolledBiometrics: available.hasEnrolledBiometrics,
         isRegistered: keyStatus.exists,
         biometricType: biometrics[0] ?? null,
         availableBiometrics: biometrics,
@@ -203,7 +210,11 @@ export function BiometricProvider({ children }: { children: ReactNode }) {
           keyAlias: createResult.keyAlias ?? undefined,
         });
 
-        setAsyncState((prev) => ({ ...prev, isRegistered: true }));
+        setAsyncState((prev) => ({
+          ...prev,
+          isRegistered: true,
+          hasEnrolledBiometrics: true,
+        }));
         return { success: true };
       } catch {
         // Backend registration failed — remove the newly created local keys
@@ -301,6 +312,7 @@ export function BiometricProvider({ children }: { children: ReactNode }) {
     () => ({
       isNativeApp: nativeApp,
       canAuthenticate: asyncState.canAuthenticate,
+      hasEnrolledBiometrics: asyncState.hasEnrolledBiometrics,
       isRegistered: asyncState.isRegistered,
       biometricType: asyncState.biometricType,
       availableBiometrics: asyncState.availableBiometrics,

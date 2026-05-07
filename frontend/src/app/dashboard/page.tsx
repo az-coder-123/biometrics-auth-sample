@@ -20,7 +20,7 @@ import {
   registerBiometricCredential,
 } from "@/lib/webauthn";
 import { useRouter } from "next/navigation";
-import { useEffect, useSyncExternalStore, useState } from "react";
+import { useEffect, useState, useSyncExternalStore } from "react";
 
 /** Subscribe to localStorage changes (cross-tab via storage event). */
 const subscribeToStorage = (callback: () => void) => {
@@ -34,8 +34,11 @@ export default function DashboardPage() {
   const {
     isNativeApp: isNative,
     canAuthenticate,
+    hasEnrolledBiometrics,
     isRegistered,
     biometricType,
+    availableBiometrics,
+    loading: nativeChecking,
     enableBiometric,
     disableBiometric,
   } = useBiometric();
@@ -82,8 +85,32 @@ export default function DashboardPage() {
     return null;
   }
 
+  const biometricUnavailableMessage = (() => {
+    if (isNative) {
+      if (nativeChecking) {
+        return "Checking biometric availability...";
+      }
+      if (!canAuthenticate) {
+        if (availableBiometrics.length > 0 && !hasEnrolledBiometrics) {
+          return "Biometrics are supported on this device, but none are enrolled. Please enroll fingerprint or face recognition in device settings.";
+        }
+        return "Biometric authentication is not available on this device. Please use a device with a fingerprint sensor or face recognition support.";
+      }
+      return null;
+    }
+
+    if (!webAuthnAvailable) {
+      if (!httpsContext) {
+        return "WebAuthn requires a secure connection. Please access this app via HTTPS (or localhost for development). Plain HTTP over an IP address is not supported.";
+      }
+      return "Biometric authentication is not available on this device. Please use a device with a fingerprint sensor or face recognition support.";
+    }
+
+    return null;
+  })();
+
   // Determine biometric status for the current runtime environment.
-  const biometricAvailable = isNative ? canAuthenticate : webAuthnAvailable;
+  const biometricAvailable = biometricUnavailableMessage === null;
   const biometricEnabled = isNative ? isRegistered : webAuthnRegistered;
 
   // -------------------------------------------------------------------------
@@ -266,9 +293,7 @@ export default function DashboardPage() {
 
           {!biometricAvailable ? (
             <div className="bg-yellow-50 border border-yellow-200 text-yellow-700 px-4 py-3 rounded-lg text-sm">
-              {!isNative && !httpsContext
-                ? "WebAuthn requires a secure connection. Please access this app via HTTPS (or localhost for development). Plain HTTP over an IP address is not supported."
-                : "Biometric authentication is not available on this device. Please use a device with a fingerprint sensor or face recognition support."}
+              {biometricUnavailableMessage}
             </div>
           ) : (
             <div className="space-y-4">
