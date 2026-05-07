@@ -283,12 +283,12 @@ export class BiometricService {
   }
 
   /**
-   * Verifies a native biometric signature (RSA-SHA256).
+   * Verifies a native biometric signature (auto-detects ECDSA or RSA).
    *
    * Native biometric verification flow:
    * 1. Validate the challenge exists and hasn't expired
    * 2. Find the credential by public key
-   * 3. Verify the RSA signature using crypto.verify
+   * 3. Auto-detect key type and verify the signature (ECDSA-SHA256 or RSA-SHA256)
    * 4. Mark the challenge as used and issue a JWT token
    *
    * @param verifyDto - Contains signature, publicKey, and payload (challenge)
@@ -332,25 +332,45 @@ export class BiometricService {
       throw new UnauthorizedException('Biometric credential not found');
     }
 
-    // Step 3: Verify the RSA signature
+    // Step 3: Verify the signature
     try {
-      // Reconstruct public key in PEM format
-      const publicKeyPem = `-----BEGIN PUBLIC KEY-----\n${publicKey}\n-----END PUBLIC KEY-----`;
+      // Reconstruct public key in PEM format (wrap lines at 64 chars for compatibility)
+      const pemBody = publicKey.match(/.{1,64}/g)?.join('\n') ?? publicKey;
+      const publicKeyPem = `-----BEGIN PUBLIC KEY-----\n${pemBody}\n-----END PUBLIC KEY-----`;
       const publicKeyObject = createPublicKey(publicKeyPem);
 
-      // Verify signature
-      const isValid = verify(
-        'RSA-SHA256',
-        Buffer.from(payload, 'utf-8'),
-        publicKeyObject,
-        Buffer.from(signature, 'base64'),
-      );
+      // Detect key type and use appropriate verification algorithm.
+      // The biometric_signature Flutter plugin generates ECDSA (P-256) keys,
+      // but older credentials might use RSA. Auto-detect from the key.
+      const keyType = publicKeyObject.asymmetricKeyType; // 'ec' or 'rsa'
+      let isValid: boolean;
+
+      if (keyType === 'ec') {
+        // ECDSA verification — the signature is DER-encoded (standard for
+        // Android Keystore and iOS Secure Enclave EC signatures).
+        isValid = verify(
+          null, // algorithm inferred from key (ECDSA-SHA256 for P-256)
+          Buffer.from(payload, 'utf-8'),
+          { key: publicKeyObject, dsaEncoding: 'der' },
+          Buffer.from(signature, 'base64'),
+        );
+      } else {
+        // RSA-SHA256 verification (legacy fallback)
+        isValid = verify(
+          'RSA-SHA256',
+          Buffer.from(payload, 'utf-8'),
+          publicKeyObject,
+          Buffer.from(signature, 'base64'),
+        );
+      }
 
       if (!isValid) {
-        this.logger.warn(`Invalid native biometric signature for user: ${credential.userId}`);
+        this.logger.warn(`Invalid native biometric signature (keyType: ${keyType}) for user: ${credential.userId}`);
         throw new UnauthorizedException('Invalid biometric signature');
       }
     } catch (error) {
+      // Re-throw our own UnauthorizedExceptions
+      if (error instanceof UnauthorizedException) throw error;
       this.logger.error(`Signature verification error: ${error instanceof Error ? error.message : String(error)}`);
       throw new UnauthorizedException('Signature verification failed');
     }
