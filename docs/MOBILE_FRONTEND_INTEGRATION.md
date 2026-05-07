@@ -34,16 +34,25 @@ This document describes the communication architecture between the **Flutter mob
 │  │  (lib/            │    │  (contexts/                 │ │
 │  │   biometric-      │    │   biometric-context.tsx)    │ │
 │  │   bridge.ts)      │    │                             │ │
-│  │                   │    │  - enableBiometric(userId)  │ │
-│  │  - isNativeApp()  │    │  - loginWithBiometric()     │ │
-│  │  - checkAvail..() │    │  - disableBiometric()       │ │
-│  │  - createKeys()   │    └─────────────────────────────┘ │
-│  │  - sign()         │                                    │
-│  │  - keyExists()    │    ┌─────────────────────────────┐ │
-│  │  - getKeyInfo()   │    │  Pages                      │ │
-│  │  - deleteKeys()   │    │  - /login (biometric btn)   │ │
-│  │  - deleteAllKeys()│    │  - /dashboard (settings)    │ │
-│  │  - simplePrompt() │    └─────────────────────────────┘ │
+│  │                   │    │  State (native only):       │ │
+│  │  - isNativeApp()  │    │  - canAuthenticate          │ │
+│  │  - checkAvail..() │    │  - isRegistered             │ │
+│  │  - createKeys()   │    │  - biometricType            │ │
+│  │  - sign()         │    │  - availableBiometrics[]    │ │
+│  │  - keyExists()    │    │  - loading (derived)        │ │
+│  │  - getKeyInfo()   │    │                             │ │
+│  │  - deleteKeys()   │    │  Methods:                   │ │
+│  │  - deleteAllKeys()│    │  - enableBiometric(userId)  │ │
+│  │  - simplePrompt() │    │  - loginWithBiometric()     │ │
+│  └──────────────────┘     │  - disableBiometric()       │ │
+│                           │  - refreshStatus()          │ │
+│  ┌───────────────────┐    └─────────────────────────────┘ │
+│  │  BiometricIcon    │                                    │
+│  │  getBiometricLabel│    ┌─────────────────────────────┐ │
+│  │  getBiometricType │    │  Pages                      │ │
+│  │  Name             │    │  - /login (4-state UI)      │ │
+│  │  (lib/biometric-  │    │  - /dashboard (settings)    │ │
+│  │   ui.tsx)         │    └─────────────────────────────┘ │
 │  └──────────────────┘                                     │
 └───────────────────────────────────────────────────────────┘
             │ HTTP API
@@ -115,7 +124,56 @@ export function isNativeApp(): boolean {
 }
 ```
 
-When `isNativeApp()` returns `true`, the frontend uses `BiometricBridge` methods. When `false`, it falls back to the WebAuthn browser API (for desktop browsers).
+`window.flutter_inappwebview` is declared **optional** in
+`frontend/src/types/flutter-inappwebview.d.ts` so TypeScript enforces the
+check before any handler call. Accessing the bridge without a guard is a
+compile-time error.
+
+When `isNativeApp()` returns `true`, the frontend uses `BiometricBridge`
+methods. When `false`, it falls back to the WebAuthn browser API.
+
+---
+
+## BiometricContext State
+
+The `BiometricContext` (`contexts/biometric-context.tsx`) exposes the
+following state fields. All fields except `isNativeApp` are only meaningful
+when running inside the mobile WebView.
+
+| Field | Type | Description |
+|---|---|---|
+| `isNativeApp` | `boolean` | `true` inside the Flutter WebView |
+| `canAuthenticate` | `boolean` | Device has biometric hardware and it is enrolled |
+| `isRegistered` | `boolean` | A key pair has been created and registered with the backend |
+| `biometricType` | `string \| null` | Primary biometric type: `"fingerprint"`, `"face"`, `"iris"`, etc. |
+| `availableBiometrics` | `string[]` | All biometric types reported by the device |
+| `loading` | `boolean` | `true` while the initial bridge availability check is in progress |
+
+### `loading` State Derivation
+
+`loading` is derived as `nativeApp && !checkedOnce` — it requires no `setState`
+call inside an effect body (which would violate React's linting rules). The
+timeline in the WebView is:
+
+```
+SSR render:           nativeApp=false  checkedOnce=false  →  loading=false
+Client hydration:     nativeApp=true   checkedOnce=false  →  loading=true  ← immediate
+refreshStatus runs:   bridge responds  checkedOnce=true   →  loading=false
+```
+
+This ensures the login page sees `loading=true` immediately when the app
+starts, preventing a flash where the biometric button is absent then suddenly
+appears.
+
+### `refreshStatus()` Contract
+
+`refreshStatus()` is exposed from the context and is safe to call from any
+component. It is a no-op when not in a native WebView. It is called:
+
+1. **Automatically** — once on app startup via `BiometricProvider`'s effect.
+2. **Explicitly** — by the login page on every mount, to reflect current device
+   state (e.g. after the user enrolled biometrics on the Dashboard and returned
+   to the login page).
 
 ---
 
@@ -234,6 +292,36 @@ This flow authenticates a user without a password, using only their biometric cr
       │ ('/dashboard')   │                     │                  │
 ```
 
+### Login Page Native Biometric Detection (4 States)
+
+Before showing the biometric login button, the login page queries the bridge
+and handles four distinct states:
+
+| State | Condition | UI Shown |
+|---|---|---|
+| **Checking** | `isNative && loading` | Spinner: *"Checking biometric availability…"* |
+| **Enrolled** | `isNative && !loading && canAuthenticate && isRegistered` | Biometric login button with `BiometricIcon` + type-specific label |
+| **Not enrolled** | `isNative && !loading && canAuthenticate && !isRegistered` | Amber hint: *"X login is not set up. Enable from Dashboard → Biometric Settings."* |
+| **Not available** | `isNative && !loading && !canAuthenticate` | Nothing — biometrics unavailable on this device |
+
+```
+Login page mounts (isNative=true)
+│
+├── useEffect: refreshStatus()  ← updates state, sets checkedOnce=true
+│
+├── loading=true  →  show spinner
+│
+└── loading=false
+       ├── canAuthenticate=true, isRegistered=true  →  show button
+       ├── canAuthenticate=true, isRegistered=false →  show amber hint
+       └── canAuthenticate=false                   →  show nothing
+```
+
+The button label and icon adapt to `biometricType` using helpers from
+`lib/biometric-ui.tsx` (see [Biometric UI Helpers](#biometric-ui-helpers)).
+
+---
+
 ### Step-by-Step
 
 1. **Generate Challenge** — The frontend calls `POST /biometric/challenge` on the backend. The backend generates a cryptographically random nonce (stored in MongoDB with 60s TTL) and returns it as `{ challenge: "..." }`.
@@ -289,13 +377,52 @@ This flow removes biometric credentials from both the device and the backend. It
 
 ---
 
+## Biometric UI Helpers
+
+`frontend/src/lib/biometric-ui.tsx` maps a biometric type string (from the
+bridge) to an SVG icon and a human-readable label. Both the login page and the
+dashboard import these helpers.
+
+### `BiometricIcon`
+
+```tsx
+<BiometricIcon type={biometricType} className="w-5 h-5" />
+```
+
+| `type` value | Icon rendered |
+|---|---|
+| `"fingerprint"`, `"strong"`, `"weak"`, `null` | Fingerprint spiral (default) |
+| `"face"` | Smiling face circle (Face ID style) |
+| `"iris"` | Eye outline |
+
+### `getBiometricLabel(type, action)`
+
+```ts
+getBiometricLabel("face", "login")    // → "Face ID Login"
+getBiometricLabel("fingerprint", "enable")  // → "Enable Fingerprint Login"
+getBiometricLabel(null, "disable")    // → "Disable Biometric Login"
+```
+
+`action` is one of `"login"` | `"enable"` | `"disable"`.
+
+### `getBiometricTypeName(type)`
+
+```ts
+getBiometricTypeName("face")         // → "Face ID"
+getBiometricTypeName("fingerprint")  // → "Fingerprint"
+getBiometricTypeName("iris")         // → "Iris"
+getBiometricTypeName(null)           // → "Biometric"
+```
+
+---
+
 ## TypeScript ↔ Dart Type Mapping
 
 The following table shows how TypeScript interfaces in the frontend map to Dart return types from the mobile app:
 
 | TypeScript Interface | Dart Method Return | Key Fields |
 |---|---|---|
-| `BiometricAvailability` | `checkAvailability()` → `Map<String, dynamic>` | `success`, `canAuthenticate`, `hasEnrolledBiometrics`, `availableBiometrics` |
+| `BiometricAvailability` | `checkAvailability()` → `Map<String, dynamic>` | `success`, `canAuthenticate`, `hasEnrolledBiometrics`, `availableBiometrics` (non-null `string[]`) |
 | `CreateKeysResult` | `createKeyPair()` → `Map<String, dynamic>` | `success`, `publicKey` (Base64), `keyAlias` |
 | `SignResult` | `signPayload()` → `Map<String, dynamic>` | `success`, `authenticated`, `signature` (Base64), `publicKey` (Base64), `payload` |
 | `KeyExistsResult` | `keyExists()` → `Map<String, dynamic>` | `exists`, `keyAlias`, `valid` |
@@ -323,10 +450,11 @@ The following table shows how TypeScript interfaces in the frontend map to Dart 
 
 | File | Responsibility |
 |---|---|
-| `frontend/src/types/flutter-inappwebview.d.ts` | TypeScript declarations for `window.flutter_inappwebview` |
+| `frontend/src/types/flutter-inappwebview.d.ts` | TypeScript declarations for `window.flutter_inappwebview?` (optional) |
 | `frontend/src/lib/biometric-bridge.ts` | Typed API for calling native JS bridge handlers |
-| `frontend/src/contexts/biometric-context.tsx` | React context managing biometric state and flows |
-| `frontend/src/app/login/page.tsx` | Login UI with native biometric + WebAuthn support |
+| `frontend/src/lib/biometric-ui.tsx` | `BiometricIcon`, `getBiometricLabel`, `getBiometricTypeName` UI helpers |
+| `frontend/src/contexts/biometric-context.tsx` | React context: state + `refreshStatus` / `enableBiometric` / `loginWithBiometric` / `disableBiometric` |
+| `frontend/src/app/login/page.tsx` | Login UI — 4-state native WebView path + WebAuthn path |
 | `frontend/src/app/dashboard/page.tsx` | Dashboard with biometric credential management |
 | `frontend/src/app/layout.tsx` | Root layout wrapping app with `BiometricProvider` |
 
@@ -337,7 +465,11 @@ The following table shows how TypeScript interfaces in the frontend map to Dart 
 | `/biometric/register` | POST | Store public key credential for a user |
 | `/biometric/challenge` | POST | Generate server challenge nonce |
 | `/biometric/verify` | POST | Verify ECDSA signature, return JWT |
-| `/biometric/unregister` | DELETE | Remove biometric credential |
+| `/biometric/unregister` | **POST** | Remove biometric credential (requires JWT) |
+
+> **Note:** The unregister endpoint uses `POST`, not `DELETE`. The `@Post`
+> decorator is used in `BiometricController` because the route requires a
+> request body (`publicKey?`) for selective credential removal.
 
 ---
 
@@ -352,11 +484,14 @@ When the frontend detects it is **not** running inside the mobile WebView (`isNa
 
 | Feature | Native (Mobile WebView) | WebAuthn (Desktop Browser) |
 |---|---|---|
-| Detection | `isNativeApp() === true` | `isPlatformAuthenticatorAvailable() === true` |
+| Detection | `isNativeApp() === true` → query bridge via `refreshStatus()` | `isWebAuthnSupported() === true` (synchronous, `useSyncExternalStore`) |
 | Key storage | Android Keystore / iOS Keychain | Browser platform authenticator |
 | API layer | `BiometricBridge.*` | `navigator.credentials.create()` / `.get()` |
 | Prompt | Native biometric dialog | Browser biometric dialog |
 | Backend flow | Same (register → challenge → sign → verify) | Same endpoints |
+| Biometric type | From `availableBiometrics[]` via bridge | Not exposed by browser API |
+| UI icon/label | Dynamic: `BiometricIcon` + `getBiometricLabel` | Static: fingerprint icon + "WebAuthn Login" |
+| Loading state | `loading=true` while bridge query in progress | No loading state needed (synchronous) |
 
 ---
 

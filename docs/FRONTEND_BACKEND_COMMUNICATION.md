@@ -775,11 +775,51 @@ Pages catch errors and display them in a styled error banner:
 |-----------------------|---------|---------------------------------|
 | `NEXT_PUBLIC_API_URL` | —       | Backend API base URL (required) |
 
-Example `.env.local`:
+#### Local development (same machine)
 
 ```env
+# .env.local
 NEXT_PUBLIC_API_URL=http://localhost:3000/api
 ```
+
+#### Remote access (ngrok / LAN IP / production HTTPS)
+
+When the frontend is served over HTTPS from an origin other than the backend,
+set the URL to a **relative path** and add a `rewrites` proxy in `next.config.ts`.
+This avoids mixed-content errors and makes the backend reachable from any
+device without exposing it publicly.
+
+```env
+# .env.local
+NEXT_PUBLIC_API_URL=/api
+```
+
+```typescript
+// next.config.ts
+const nextConfig: NextConfig = {
+  async rewrites() {
+    return [
+      {
+        source: "/api/:path*",
+        destination: "http://localhost:3000/api/:path*",
+      },
+    ];
+  },
+};
+```
+
+The browser calls `https://<your-origin>/api/...`; Next.js server-side
+rewrites it to `http://localhost:3000/api/...`. No additional tunnel for the
+backend is required — only the frontend port needs to be exposed.
+
+> **HMR WebSocket (development):** When accessing via ngrok or a LAN IP,
+> also add the hostname to `allowedDevOrigins` in `next.config.ts`:
+>
+> ```typescript
+> allowedDevOrigins: ["*.ngrok-free.app", "*.ngrok-free.dev", "192.168.x.x"],
+> ```
+> Without this, Next.js 15+ rejects the WebSocket connection used for hot
+> reloading, causing the browser to display a WebSocket error in the console.
 
 ---
 

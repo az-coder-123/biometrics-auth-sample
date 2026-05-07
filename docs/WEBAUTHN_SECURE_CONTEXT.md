@@ -163,15 +163,25 @@ export function isWebAuthnSupported(): boolean {
 | HTTP non-localhost | `false` | `false` | "WebAuthn requires a secure connection…" |
 | HTTPS / localhost, browser no WebAuthn | `true` | `false` | "Biometric authentication is not available on this device…" |
 | HTTPS / localhost, WebAuthn available | `true` | `true` | Enable / Disable biometric buttons |
-| Inside Flutter WebView | — | — | Native biometric controls (different code path) |
+| Inside Flutter WebView, bridge loading | — | — | Loading skeleton (`loading=true`) |
+| Inside Flutter WebView, biometrics available | — | — | Native biometric controls with dynamic icon |
 
-### Login page — Biometric login button
+### Login page — Native WebView (4 states via JS bridge)
+
+| State | Condition | UI shown |
+|---|---|---|
+| Checking | `isNative && loading` | Spinner: *"Checking biometric availability…"* |
+| Enrolled | `isNative && !loading && canAuthenticate && isRegistered` | Button: `BiometricIcon` + *"Face ID Login"* / *"Fingerprint Login"* |
+| Not enrolled | `isNative && !loading && canAuthenticate && !isRegistered` | Amber hint: *"Enable from Dashboard → Biometric Settings"* |
+| Not available | `isNative && !loading && !canAuthenticate` | Nothing |
+
+### Login page — Browser WebAuthn
 
 | Scenario | `webAuthnAvailable` | Button shown? |
 |---|---|---|
 | HTTP non-localhost | `false` | No |
-| HTTPS / localhost, WebAuthn available | `true` | Yes |
-| Inside Flutter WebView with enrolled keys | — | Yes (native path) |
+| HTTPS / localhost, WebAuthn available | `true` | Yes — "WebAuthn Login" (fingerprint icon) |
+| Inside Flutter WebView | N/A | Native path takes precedence |
 
 ---
 
@@ -181,7 +191,50 @@ When you need to test WebAuthn from **another device on the same network**
 (e.g., a mobile phone connecting via Wi-Fi to `192.168.x.x`), you need HTTPS.
 `localhost` only works from the same machine.
 
-### Option 1 — ngrok (simplest)
+### Recommended: ngrok + Next.js API proxy
+
+This is the cleanest approach. It requires only **one** ngrok tunnel (for the
+frontend) and avoids mixed-content errors by having the Next.js server proxy
+API calls to the backend.
+
+```bash
+# 1. Tunnel only the frontend (port 3001)
+ngrok http 3001
+# → https://xxxx.ngrok-free.app
+```
+
+```env
+# 2. .env.local — use a relative URL so the browser never calls HTTP directly
+NEXT_PUBLIC_API_URL=/api
+```
+
+```typescript
+// 3. next.config.ts — proxy /api/* → localhost:3000/api/* server-side
+const nextConfig: NextConfig = {
+  allowedDevOrigins: ["*.ngrok-free.app", "*.ngrok-free.dev", "*.ngrok.io"],
+  async rewrites() {
+    return [{ source: "/api/:path*", destination: "http://localhost:3000/api/:path*" }];
+  },
+};
+```
+
+```bash
+# 4. Restart the Next.js dev server to pick up the env var change
+npm run dev
+```
+
+Open `https://xxxx.ngrok-free.app` on any device. The browser calls
+`https://xxxx.ngrok-free.app/api/...`; Next.js forwards it to
+`http://localhost:3000/api/...` server-side. No second tunnel needed.
+
+> **Why `allowedDevOrigins` matters:** Next.js 15+ rejects WebSocket HMR
+> connections from unlisted origins. Without this, the browser console shows
+> *"WebSocket connection to 'wss://…/_next/webpack-hmr?id=…' failed"* and
+> hot-reload does not work.
+
+---
+
+### Option 1 — ngrok (frontend only, use with API proxy)
 
 ```bash
 # Install: https://ngrok.com/download
@@ -189,8 +242,8 @@ ngrok http 3001
 # → Forwarding  https://xxxx.ngrok-free.app → http://localhost:3001
 ```
 
-Open `https://xxxx.ngrok-free.app` on any device. The HTTPS tunnel satisfies
-the Secure Context requirement.
+Use together with `NEXT_PUBLIC_API_URL=/api` and `rewrites` (see Recommended
+above) so the browser never calls the backend HTTP URL directly.
 
 ### Option 2 — Cloudflare Tunnel (free, no account required for one-shot)
 
