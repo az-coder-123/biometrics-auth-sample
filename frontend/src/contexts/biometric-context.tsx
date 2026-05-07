@@ -151,12 +151,24 @@ export function BiometricProvider({ children }: { children: ReactNode }) {
         biometricType: biometrics[0] ?? null,
         availableBiometrics: biometrics,
       });
-    } catch {
-      // Keep current state on bridge error
+    } catch (err) {
+      // Log the error for debugging but keep current state
+      console.error('[BiometricContext] Failed to refresh status:', err);
+      
+      // Set defaults on first check failure to prevent showing wrong state
+      if (!checkedOnce) {
+        setAsyncState({
+          canAuthenticate: false,
+          hasEnrolledBiometrics: false,
+          isRegistered: false,
+          biometricType: null,
+          availableBiometrics: [],
+        });
+      }
     } finally {
       setCheckedOnce(true);
     }
-  }, []);
+  }, [checkedOnce]);
 
   // Run initial native check after first render inside the WebView.
   useEffect(() => {

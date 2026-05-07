@@ -85,10 +85,16 @@ export interface KeyInfoResult {
  * `flutter_inappwebview` object onto `window`.
  */
 export function isNativeApp(): boolean {
-  return (
+  const result = (
     typeof window !== "undefined" &&
     typeof window.flutter_inappwebview !== "undefined"
   );
+  
+  if (typeof window !== "undefined" && !result) {
+    console.debug('[BiometricBridge] Not running in native app (flutter_inappwebview not found)');
+  }
+  
+  return result;
 }
 
 const BRIDGE_READY_EVENT = "flutterInAppWebViewPlatformReady";
@@ -110,9 +116,11 @@ export function isBridgeReady(): boolean {
 
 /**
  * Waits for the WebView bridge to signal readiness.
- * Resolves after a short timeout to avoid blocking forever.
+ * Resolves after a timeout to avoid blocking forever.
+ * 
+ * @param timeoutMs - Maximum time to wait (default: 3000ms)
  */
-export function waitForBridgeReady(timeoutMs: number = 1500): Promise<void> {
+export function waitForBridgeReady(timeoutMs: number = 3000): Promise<void> {
   if (typeof window === "undefined") return Promise.resolve();
   if (isBridgeReady()) return Promise.resolve();
   if (bridgeReadyPromise) return bridgeReadyPromise;
@@ -134,15 +142,41 @@ export function waitForBridgeReady(timeoutMs: number = 1500): Promise<void> {
       bridgeReadyPromise = null;
     };
 
-    timerId = window.setTimeout(() => {
-      if (window.flutter_inappwebview?.callHandler) {
+    // Check periodically if bridge became available
+    let checkCount = 0;
+    const maxChecks = Math.ceil(timeoutMs / 100);
+    
+    const checkBridge = () => {
+      checkCount++;
+      
+      if (window.flutter_inappwebview?.callHandler && 
+          window.flutter_inappwebview?._platformReady === true) {
         bridgeReady = true;
+        cleanup();
+        resolve();
+        return;
       }
-      cleanup();
-      resolve();
-    }, timeoutMs);
+      
+      if (checkCount >= maxChecks) {
+        // Final check before timeout
+        if (window.flutter_inappwebview?.callHandler) {
+          bridgeReady = true;
+          console.warn('[BiometricBridge] Platform ready event not received, but bridge exists');
+        } else {
+          console.error('[BiometricBridge] Bridge not ready after timeout');
+        }
+        cleanup();
+        resolve();
+      } else {
+        timerId = window.setTimeout(checkBridge, 100);
+      }
+    };
 
+    // Listen for the ready event (preferred path)
     window.addEventListener(BRIDGE_READY_EVENT, onReady, { once: true });
+    
+    // Start periodic checking as fallback
+    timerId = window.setTimeout(checkBridge, 100);
   });
 
   return bridgeReadyPromise;
@@ -197,6 +231,7 @@ export const BiometricBridge = {
    * Checks whether biometric authentication is available on this device.
    */
   checkAvailability(): Promise<BiometricAvailability> {
+    console.debug('[BiometricBridge] Calling checkAvailability');
     return callHandler<BiometricAvailability>("biometricAuthAvailable");
   },
 

@@ -117,7 +117,30 @@ class _WebViewPageState extends State<WebViewPage> {
     // Register all JavaScript bridge handlers
     _jsBridgeService.registerHandlers(controller);
 
+    // Notify the frontend that the bridge is ready by dispatching a custom event
+    // and setting a flag. This allows the frontend's waitForBridgeReady() to proceed.
+    _notifyBridgeReady(controller);
+
     AppLogger.info('WebView created and JS bridge handlers registered');
+  }
+
+  /// Notifies the WebView that the JavaScript bridge is ready.
+  ///
+  /// Dispatches the 'flutterInAppWebViewPlatformReady' event and sets the
+  /// `_platformReady` flag on the bridge object. The frontend waits for
+  /// this signal before calling biometric handlers.
+  void _notifyBridgeReady(InAppWebViewController controller) {
+    controller.evaluateJavascript(
+      source: '''
+      (function() {
+        if (window.flutter_inappwebview) {
+          window.flutter_inappwebview._platformReady = true;
+          window.dispatchEvent(new Event('flutterInAppWebViewPlatformReady'));
+          console.log('[Native Bridge] Platform ready event dispatched');
+        }
+      })();
+    ''',
+    );
   }
 
   /// Called when a page starts loading.
@@ -134,6 +157,12 @@ class _WebViewPageState extends State<WebViewPage> {
     setState(() {
       _isLoading = false;
     });
+
+    // Ensure the bridge ready signal is sent after each page load.
+    // This handles cases where the page loads before onWebViewCreated completes,
+    // or when navigating to a new page within the WebView.
+    _notifyBridgeReady(controller);
+
     AppLogger.info('WebView loaded: ${url?.toString()}');
   }
 
