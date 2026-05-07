@@ -13,7 +13,6 @@ import { useBiometric } from "@/contexts/biometric-context";
 import { biometricApi } from "@/lib/api-client";
 import {
   generateRandomBuffer,
-  isPlatformAuthenticatorAvailable,
   isWebAuthnSupported,
   registerBiometricCredential,
 } from "@/lib/webauthn";
@@ -40,7 +39,14 @@ export default function DashboardPage() {
     disableBiometric,
   } = useBiometric();
 
-  const [webAuthnAvailable, setWebAuthnAvailable] = useState(false);
+  // Detect WebAuthn browser support without hydration mismatch.
+  // Server snapshot is false; client snapshot reads the actual browser API.
+  const webAuthnAvailable = useSyncExternalStore(
+    () => () => {},
+    () => isWebAuthnSupported(),
+    () => false,
+  );
+
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
   const [isLoading, setIsLoading] = useState(false);
@@ -51,13 +57,6 @@ export default function DashboardPage() {
       router.push("/login");
     }
   }, [authLoading, isAuthenticated, router]);
-
-  // Check WebAuthn availability (desktop browser only)
-  useEffect(() => {
-    if (!isNative && isWebAuthnSupported()) {
-      isPlatformAuthenticatorAvailable().then(setWebAuthnAvailable);
-    }
-  }, [isNative]);
 
   // Check WebAuthn credential registration status (derived from localStorage)
   const storageKey = `${CREDENTIAL_STORAGE_PREFIX}${email ?? ""}`;

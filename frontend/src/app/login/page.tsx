@@ -14,11 +14,11 @@ import { useBiometric } from "@/contexts/biometric-context";
 import { biometricApi } from "@/lib/api-client";
 import {
   authenticateWithBiometric,
-  isPlatformAuthenticatorAvailable,
+  isWebAuthnSupported,
 } from "@/lib/webauthn";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { FormEvent, useEffect, useState } from "react";
+import { FormEvent, useState, useSyncExternalStore } from "react";
 
 /** Storage key for persisted WebAuthn credential IDs per user. */
 const CREDENTIAL_STORAGE_PREFIX = "biometrics_cred_ids_";
@@ -33,18 +33,18 @@ export default function LoginPage() {
     loginWithBiometric,
   } = useBiometric();
 
+  // Detect WebAuthn browser support without hydration mismatch.
+  // Server snapshot is false; client snapshot reads the actual browser API.
+  const webAuthnAvailable = useSyncExternalStore(
+    () => () => {},
+    () => isWebAuthnSupported(),
+    () => false,
+  );
+
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
   const [isLoading, setIsLoading] = useState(false);
-  const [webAuthnAvailable, setWebAuthnAvailable] = useState(false);
-
-  // Check WebAuthn availability on mount (for desktop browsers)
-  useEffect(() => {
-    if (!isNative) {
-      isPlatformAuthenticatorAvailable().then(setWebAuthnAvailable);
-    }
-  }, [isNative]);
 
   // Determine if any biometric option should be shown
   const showNativeBiometric = isNative && canAuthenticate && isRegistered;
