@@ -6,18 +6,18 @@
  */
 
 import type {
-  ApiResponse,
-  BiometricRegisterRequest,
-  BiometricRegisterResponse,
-  BiometricUnregisterResponse,
-  BiometricVerifyRequest,
-  BiometricVerifyResponse,
-  ChallengeResponse,
-  LoginRequest,
-  LoginResponse,
-  ProfileResponse,
-  RegisterRequest,
-  RegisterResponse,
+    ApiResponse,
+    BiometricRegisterRequest,
+    BiometricRegisterResponse,
+    BiometricUnregisterResponse,
+    BiometricVerifyRequest,
+    BiometricVerifyResponse,
+    ChallengeResponse,
+    LoginRequest,
+    LoginResponse,
+    ProfileResponse,
+    RegisterRequest,
+    RegisterResponse,
 } from "./types";
 
 /**
@@ -132,6 +132,19 @@ export const authApi = {
 
 /** Biometric authentication API methods. */
 export const biometricApi = {
+  /**
+   * Checks if the authenticated user has a native biometric credential.
+   *
+   * @param token - JWT access token
+   * @returns Object with hasCredential boolean
+   */
+  checkNativeCredential(token: string): Promise<{ hasCredential: boolean; keyAlias?: string }> {
+    return request<{ hasCredential: boolean; keyAlias?: string }>("/biometric/check", {
+      method: "POST",
+      token,
+    });
+  },
+
   /**
    * Registers a biometric credential for a user.
    *

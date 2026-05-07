@@ -102,6 +102,34 @@ export class BiometricService {
   }
 
   /**
+   * Checks if a user has an active native biometric credential.
+   *
+   * This method looks for credentials that have a keyAlias matching
+   * the native pattern (not WebAuthn credentials which use credentialId).
+   *
+   * @param userId - The user ID to check
+   * @returns Object with hasCredential boolean
+   */
+  async hasNativeCredential(userId: string): Promise<{ hasCredential: boolean; keyAlias?: string }> {
+    const credential = await this.credentialModel
+      .findOne({
+        userId,
+        keyAlias: { $ne: null },
+        isActive: true,
+      })
+      .exec();
+
+    if (credential) {
+      return {
+        hasCredential: true,
+        keyAlias: credential.keyAlias ?? undefined,
+      };
+    }
+
+    return { hasCredential: false };
+  }
+
+  /**
    * Generates a one-time challenge nonce for biometric authentication.
    *
    * The challenge must be signed by the device's private key and

@@ -54,6 +54,19 @@ export class BiometricController {
   }
 
   /**
+   * Checks if the authenticated user has a native biometric credential.
+   *
+   * GET /api/biometric/check
+   * Requires JWT token in Authorization header.
+   */
+  @UseGuards(JwtAuthGuard)
+  @Post('check')
+  async checkCredential(@CurrentUser() user: { userId: string }) {
+    const result = await this.biometricService.hasNativeCredential(user.userId);
+    return result;
+  }
+
+  /**
    * Verifies a biometric signature and returns an access token.
    *
    * POST /api/biometric/verify

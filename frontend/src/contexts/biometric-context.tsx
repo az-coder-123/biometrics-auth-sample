@@ -67,6 +67,8 @@ interface BiometricContextType extends BiometricState {
   disableBiometric: () => Promise<void>;
   /** Re-checks native biometric availability and registration status. No-op in browser. */
   refreshStatus: () => Promise<void>;
+  /** Verifies biometric registration with backend for the current user. No-op in browser. */
+  verifyRegistrationWithBackend: (token: string) => Promise<void>;
 }
 
 // ---------------------------------------------------------------------------
@@ -185,6 +187,36 @@ export function BiometricProvider({ children }: { children: ReactNode }) {
     const id = setTimeout(refreshStatus, 0);
     return () => clearTimeout(id);
   }, [nativeApp, refreshStatus]);
+
+  /**
+   * Verifies biometric registration with backend for the current user.
+   * Call this after login to ensure local device keys match current user.
+   */
+  const verifyRegistrationWithBackend = useCallback(async (token: string) => {
+    if (!isNativeApp()) return;
+
+    try {
+      const [keyStatus, backendStatus] = await Promise.all([
+        BiometricBridge.keyExists(),
+        biometricApi.checkNativeCredential(token),
+      ]);
+
+      const isActuallyRegistered = keyStatus.exists && backendStatus.hasCredential;
+
+      console.log('[BiometricContext] Registration verification:', {
+        localKeyExists: keyStatus.exists,
+        backendHasCredential: backendStatus.hasCredential,
+        finalIsRegistered: isActuallyRegistered,
+      });
+
+      setAsyncState((prev) => ({
+        ...prev,
+        isRegistered: isActuallyRegistered,
+      }));
+    } catch (err) {
+      console.error('[BiometricContext] Failed to verify registration:', err);
+    }
+  }, []);
 
   // ---------------------------------------------------------------------------
   // enableBiometric — native only
@@ -349,8 +381,9 @@ export function BiometricProvider({ children }: { children: ReactNode }) {
       loginWithBiometric,
       disableBiometric,
       refreshStatus,
+      verifyRegistrationWithBackend,
     }),
-    [nativeApp, asyncState, checkedOnce, enableBiometric, loginWithBiometric, disableBiometric, refreshStatus],
+    [nativeApp, asyncState, checkedOnce, enableBiometric, loginWithBiometric, disableBiometric, refreshStatus, verifyRegistrationWithBackend],
   );
 
   return (

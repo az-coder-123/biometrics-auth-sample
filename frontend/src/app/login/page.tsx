@@ -17,8 +17,8 @@ import { biometricApi } from "@/lib/api-client";
 import { BiometricIcon, getBiometricLabel, getBiometricTypeName } from "@/lib/biometric-ui";
 import { WEBAUTHN_CRED_IDS_PREFIX } from "@/lib/storage-keys";
 import {
-  authenticateWithBiometric,
-  isWebAuthnSupported,
+    authenticateWithBiometric,
+    isWebAuthnSupported,
 } from "@/lib/webauthn";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
@@ -35,6 +35,7 @@ export default function LoginPage() {
     loading: nativeChecking,
     loginWithBiometric,
     refreshStatus,
+    verifyRegistrationWithBackend,
   } = useBiometric();
 
   // Detect WebAuthn browser support without hydration mismatch.
@@ -84,6 +85,16 @@ export default function LoginPage() {
 
     try {
       await login({ email, password });
+      
+      // After successful password login, verify biometric registration
+      // to sync state between backend and local device for multi-user scenarios
+      if (isNative) {
+        const token = localStorage.getItem("auth_token");
+        if (token) {
+          await verifyRegistrationWithBackend(token);
+        }
+      }
+      
       router.push("/dashboard");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Login failed");
