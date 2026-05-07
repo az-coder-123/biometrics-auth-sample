@@ -71,8 +71,9 @@ export class BiometricService {
       return existingByPublicKey;
     }
 
-    // Check if credential exists with same keyAlias but DIFFERENT publicKey
-    // This means a different device or key regeneration on same device
+    // Check if credential exists with same keyAlias but DIFFERENT publicKey.
+    // This happens when the user re-registers on the same device (key was regenerated).
+    // Update the existing credential with the new public key.
     const existingByKeyAlias = await this.credentialModel
       .findOne({ userId, keyAlias: keyAlias ?? null, isActive: true })
       .exec();
@@ -80,15 +81,16 @@ export class BiometricService {
     if (existingByKeyAlias && existingByKeyAlias.publicKey !== publicKey) {
       this.logger.log(
         `Different publicKey detected for keyAlias "${keyAlias ?? 'null'}" ` +
-        `(user: ${userId}). Creating new credential instead of overwriting.`
+        `(user: ${userId}). Updating existing credential with new publicKey.`
       );
-      // Do NOT overwrite - allow multiple credentials per user
-      // This supports scenarios where:
-      // 1. User registers on mobile, then re-registers in mobile WebView
-      // 2. User has multiple devices with same keyAlias
+
+      existingByKeyAlias.publicKey = publicKey;
+      const savedCredential = await existingByKeyAlias.save();
+      this.logger.log(`Biometric credential updated for user: ${userId}`);
+      return savedCredential;
     }
 
-    // CREATE new credential (supports multiple credentials per user)
+    // No existing credential — create new one
     const credential = new this.credentialModel({
       userId,
       publicKey,
@@ -334,33 +336,57 @@ export class BiometricService {
 
     // Step 3: Verify the signature
     try {
-      // Reconstruct public key in PEM format (wrap lines at 64 chars for compatibility)
-      const pemBody = publicKey.match(/.{1,64}/g)?.join('\n') ?? publicKey;
-      const publicKeyPem = `-----BEGIN PUBLIC KEY-----\n${pemBody}\n-----END PUBLIC KEY-----`;
+      // Reconstruct public key in PEM format.
+      // The mobile app sends base64-encoded SPKI DER (no PEM headers).
+      // Skip wrapping if PEM headers are already present.
+      const publicKeyPem = publicKey.includes('-----BEGIN')
+        ? publicKey
+        : `-----BEGIN PUBLIC KEY-----\n${publicKey}\n-----END PUBLIC KEY-----`;
+
       const publicKeyObject = createPublicKey(publicKeyPem);
 
       // Detect key type and use appropriate verification algorithm.
       // The biometric_signature Flutter plugin generates ECDSA (P-256) keys,
       // but older credentials might use RSA. Auto-detect from the key.
       const keyType = publicKeyObject.asymmetricKeyType; // 'ec' or 'rsa'
+      this.logger.debug(`Detected key type: ${keyType} for native biometric verification`);
+
+      // Decode the signature — mobile plugins may return base64 or base64url.
+      const signatureBuffer = this.decodeBase64Flexible(signature);
+
+      const dataBuffer = Buffer.from(payload, 'utf-8');
+
       let isValid: boolean;
 
       if (keyType === 'ec') {
-        // ECDSA verification — the signature is DER-encoded (standard for
-        // Android Keystore and iOS Secure Enclave EC signatures).
+        // ECDSA verification.
+        // Try DER-encoded signature first (standard for Android Keystore / iOS Secure Enclave).
         isValid = verify(
           null, // algorithm inferred from key (ECDSA-SHA256 for P-256)
-          Buffer.from(payload, 'utf-8'),
+          dataBuffer,
           { key: publicKeyObject, dsaEncoding: 'der' },
-          Buffer.from(signature, 'base64'),
+          signatureBuffer,
         );
+
+        // If DER fails, try raw r||s (32+32 bytes for P-256).
+        // Some plugins return uncompressed r||s instead of DER.
+        if (!isValid && signatureBuffer.length === 64) {
+          this.logger.debug('DER verification failed, trying raw r||s format');
+          const derSignature = this.rawEcdsaToDer(signatureBuffer);
+          isValid = verify(
+            null,
+            dataBuffer,
+            { key: publicKeyObject, dsaEncoding: 'der' },
+            derSignature,
+          );
+        }
       } else {
         // RSA-SHA256 verification (legacy fallback)
         isValid = verify(
           'RSA-SHA256',
-          Buffer.from(payload, 'utf-8'),
+          dataBuffer,
           publicKeyObject,
-          Buffer.from(signature, 'base64'),
+          signatureBuffer,
         );
       }
 
@@ -368,6 +394,8 @@ export class BiometricService {
         this.logger.warn(`Invalid native biometric signature (keyType: ${keyType}) for user: ${credential.userId}`);
         throw new UnauthorizedException('Invalid biometric signature');
       }
+
+      this.logger.log(`Native biometric signature verified (keyType: ${keyType}) for user: ${credential.userId}`);
     } catch (error) {
       // Re-throw our own UnauthorizedExceptions
       if (error instanceof UnauthorizedException) throw error;
@@ -652,5 +680,74 @@ export class BiometricService {
     const base64 = base64url.replace(/-/g, '+').replace(/_/g, '/');
     const padded = base64 + '='.repeat((4 - (base64.length % 4)) % 4);
     return Buffer.from(padded, 'base64');
+  }
+
+  /**
+   * Decodes a base64 or base64url-encoded string to a Buffer.
+   *
+   * Mobile plugins may return signatures in either format.
+   * This method normalises the input before decoding.
+   *
+   * @param input - Base64 or base64url-encoded string
+   * @returns Decoded Buffer
+   */
+  private decodeBase64Flexible(input: string): Buffer {
+    // Normalize base64url to base64
+    const base64 = input.replace(/-/g, '+').replace(/_/g, '/');
+    const padded = base64 + '='.repeat((4 - (base64.length % 4)) % 4);
+    return Buffer.from(padded, 'base64');
+  }
+
+  /**
+   * Converts a raw ECDSA P-256 signature (r || s, 32 bytes each) to DER format.
+   *
+   * Android Keystore and some Flutter plugins return the raw concatenation
+   * of r and s integers instead of the DER-encoded SEQUENCE required by
+   * Node.js crypto with dsaEncoding: 'der'.
+   *
+   * DER structure:
+   *   0x30 <len> 0x02 <r_len> <r_bytes> 0x02 <s_len> <s_bytes>
+   *
+   * @param rawSignature - 64-byte buffer (r || s, 32 bytes each)
+   * @returns DER-encoded signature buffer
+   */
+  private rawEcdsaToDer(rawSignature: Buffer): Buffer {
+    // Split into r and s (each 32 bytes for P-256)
+    const r = rawSignature.subarray(0, 32);
+    const s = rawSignature.subarray(32, 64);
+
+    // DER-encode each integer (prepend 0x00 if high bit is set to keep it positive)
+    const rDer = this.derEncodeInteger(r);
+    const sDer = this.derEncodeInteger(s);
+
+    // SEQUENCE { INTEGER r, INTEGER s }
+    const content = Buffer.concat([rDer, sDer]);
+    return Buffer.concat([Buffer.from([0x30, content.length]), content]);
+  }
+
+  /**
+   * DER-encodes a big integer for ECDSA signatures.
+   *
+   * Prepends a leading zero byte if the high bit is set (to keep the
+   * value positive in ASN.1 two's-complement representation).
+   *
+   * @param value - Raw integer bytes
+   * @returns DER-encoded INTEGER: 0x02 <len> <bytes>
+   */
+  private derEncodeInteger(value: Buffer): Buffer {
+    // Remove leading zeros
+    let start = 0;
+    while (start < value.length - 1 && value[start] === 0) {
+      start++;
+    }
+
+    let trimmed = value.subarray(start);
+
+    // Prepend 0x00 if high bit is set (keep positive)
+    if (trimmed[0] & 0x80) {
+      trimmed = Buffer.concat([Buffer.from([0x00]), trimmed]);
+    }
+
+    return Buffer.concat([Buffer.from([0x02, trimmed.length]), trimmed]);
   }
 }
