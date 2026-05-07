@@ -60,20 +60,35 @@ export class BiometricService {
       throw new BadRequestException('User not found');
     }
 
-    // Check if credential already exists for this keyAlias
-    // If it exists, UPDATE it instead of throwing an error
-    const existingCredential = await this.credentialModel
+    // Check if credential already exists for this exact publicKey (same device re-registering)
+    const existingByPublicKey = await this.credentialModel
+      .findOne({ userId, publicKey, isActive: true })
+      .exec();
+
+    if (existingByPublicKey) {
+      this.logger.log(`Credential already exists for this device (user: ${userId})`);
+      // Same device, same key → no changes needed
+      return existingByPublicKey;
+    }
+
+    // Check if credential exists with same keyAlias but DIFFERENT publicKey
+    // This means a different device or key regeneration on same device
+    const existingByKeyAlias = await this.credentialModel
       .findOne({ userId, keyAlias: keyAlias ?? null, isActive: true })
       .exec();
 
-    if (existingCredential) {
-      this.logger.log(`Updating existing biometric credential for user: ${userId}`);
-      existingCredential.publicKey = publicKey;
-      existingCredential.isActive = true;
-      const updated = await existingCredential.save();
-      return updated;
+    if (existingByKeyAlias && existingByKeyAlias.publicKey !== publicKey) {
+      this.logger.log(
+        `Different publicKey detected for keyAlias "${keyAlias ?? 'null'}" ` +
+        `(user: ${userId}). Creating new credential instead of overwriting.`
+      );
+      // Do NOT overwrite - allow multiple credentials per user
+      // This supports scenarios where:
+      // 1. User registers on mobile, then re-registers in mobile WebView
+      // 2. User has multiple devices with same keyAlias
     }
 
+    // CREATE new credential (supports multiple credentials per user)
     const credential = new this.credentialModel({
       userId,
       publicKey,

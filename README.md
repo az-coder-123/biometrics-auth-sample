@@ -9,6 +9,7 @@ A complete **biometric authentication system** demonstrating hardware-backed cry
 - ✅ **Hardware-Backed Keys** (Android Keystore/StrongBox, iOS Secure Enclave)
 - ✅ **Challenge-Response Flow** (replay attack prevention)
 - ✅ **Dual-Mode Backend** (supports both native and WebAuthn verification)
+- ✅ **Multiple Credentials** (users can register on multiple devices simultaneously)
 - ✅ **JWT Authentication** (stateless session management)
 - ✅ **Production-Ready** (error handling, logging, TypeScript strict mode)
 

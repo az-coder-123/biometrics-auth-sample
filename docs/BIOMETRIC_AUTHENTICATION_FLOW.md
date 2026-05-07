@@ -267,13 +267,32 @@ verify(
 
 ## Security Considerations
 
-### 1. Challenge Replay Prevention
+### 1. Multiple Credentials Support
+
+As of the latest update, the backend **allows multiple biometric credentials per user**:
+
+- **Use Case**: User can register biometric on multiple devices (e.g., mobile app, desktop WebAuthn)
+- **Strategy**: Each credential is identified by its unique `publicKey`
+- **No Overwriting**: Registration of a new credential does **NOT** deactivate or overwrite existing credentials
+- **Device Independence**: Each device maintains its own key pair and can authenticate independently
+
+**Important**: If a user registers biometric on the same device multiple times (e.g., re-enables biometric in mobile WebView), a **new credential is created** instead of updating the old one. This prevents cross-device conflicts where:
+- User registers on mobile app → credential A
+- User opens web dashboard in mobile WebView and enables biometric → credential B (different `publicKey`)
+- Both credentials remain active, ensuring mobile app login continues to work
+
+**Recommendation**: For production, consider implementing credential management UI where users can:
+- View all registered devices
+- Revoke specific credentials (set `isActive: false`)
+- Set a maximum number of active credentials per user
+
+### 2. Challenge Replay Prevention
 
 - Each challenge can only be used **once** (`isUsed` flag)
 - Challenges **expire after 5 minutes**
 - Old challenges are **not reusable** even if valid
 
-### 2. Private Key Protection
+### 3. Private Key Protection
 
 - Private keys are **hardware-backed**:
   - Android: `setIsStrongBoxBacked(true)` → TEE/StrongBox
@@ -281,13 +300,13 @@ verify(
 - Keys require **biometric authentication** for each use
 - Keys are **bound to the device** (cannot be exported)
 
-### 3. Public Key Storage
+### 4. Public Key Storage
 
 - Public keys stored in MongoDB are **read-only** after registration
 - Each credential is tied to a specific `userId`
 - Credentials can be marked **inactive** instead of deleted (audit trail)
 
-### 4. Signature Algorithm
+### 5. Signature Algorithm
 
 - **RSA-2048** with **SHA-256** hashing
 - Industry-standard algorithm supported by both platforms
