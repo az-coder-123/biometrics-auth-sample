@@ -39,9 +39,10 @@ class JsBridgeService {
   ///
   /// Call this once when the WebView is created, before any page loads.
   void registerHandlers(InAppWebViewController controller) {
+    AppLogger.info('🔧 Registering JavaScript bridge handlers...');
     _registerBiometricHandlers(controller);
     _registerLogHandlers(controller);
-    AppLogger.info('All JS bridge handlers registered');
+    AppLogger.info('✅ All JS bridge handlers registered successfully');
   }
 
   // ===========================================================================
@@ -69,8 +70,10 @@ class JsBridgeService {
     controller.addJavaScriptHandler(
       handlerName: 'biometricAuthAvailable',
       callback: (args) async {
-        AppLogger.debug('JS Bridge: biometricAuthAvailable');
-        return await _biometricService.checkAvailability();
+        AppLogger.info('🔔 JS Bridge: biometricAuthAvailable called');
+        final result = await _biometricService.checkAvailability();
+        AppLogger.info('✅ JS Bridge: biometricAuthAvailable result: $result');
+        return result;
       },
     );
 

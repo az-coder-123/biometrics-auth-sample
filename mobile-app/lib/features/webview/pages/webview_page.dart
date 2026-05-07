@@ -129,18 +129,39 @@ class _WebViewPageState extends State<WebViewPage> {
   /// Dispatches the 'flutterInAppWebViewPlatformReady' event and sets the
   /// `_platformReady` flag on the bridge object. The frontend waits for
   /// this signal before calling biometric handlers.
-  void _notifyBridgeReady(InAppWebViewController controller) {
-    controller.evaluateJavascript(
-      source: '''
-      (function() {
-        if (window.flutter_inappwebview) {
-          window.flutter_inappwebview._platformReady = true;
-          window.dispatchEvent(new Event('flutterInAppWebViewPlatformReady'));
-          console.log('[Native Bridge] Platform ready event dispatched');
-        }
-      })();
-    ''',
-    );
+  void _notifyBridgeReady(InAppWebViewController controller) async {
+    AppLogger.debug('Notifying WebView that bridge is ready...');
+
+    try {
+      await controller.evaluateJavascript(
+        source: '''
+        (function() {
+          console.log('[Native Bridge] Starting bridge initialization...');
+          console.log('[Native Bridge] flutter_inappwebview exists:', !!window.flutter_inappwebview);
+          
+          if (window.flutter_inappwebview) {
+            console.log('[Native Bridge] Setting _platformReady flag...');
+            window.flutter_inappwebview._platformReady = true;
+            
+            console.log('[Native Bridge] Dispatching platform ready event...');
+            window.dispatchEvent(new Event('flutterInAppWebViewPlatformReady'));
+            
+            console.log('[Native Bridge] ✅ Platform ready event dispatched successfully!');
+            console.log('[Native Bridge] Bridge state:', {
+              hasCallHandler: !!window.flutter_inappwebview.callHandler,
+              platformReady: window.flutter_inappwebview._platformReady
+            });
+          } else {
+            console.error('[Native Bridge] ❌ flutter_inappwebview object not found!');
+          }
+        })();
+      ''',
+      );
+
+      AppLogger.info('Bridge ready notification sent successfully');
+    } catch (e) {
+      AppLogger.error('Failed to notify bridge ready: $e');
+    }
   }
 
   /// Called when a page starts loading.

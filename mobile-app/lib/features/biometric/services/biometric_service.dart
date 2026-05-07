@@ -36,22 +36,44 @@ class BiometricService {
   ///   "availableBiometrics": ["fingerprint"], "reason": null }
   /// ```
   Future<Map<String, dynamic>> checkAvailability() async {
+    AppLogger.info('🔍 BiometricService: Checking biometric availability...');
+
     try {
       final result = await _biometric.biometricAuthAvailable();
-      return {
+
+      AppLogger.info(
+        '📱 BiometricService: Platform result:',
+        {
+          'canAuthenticate': result.canAuthenticate,
+          'hasEnrolledBiometrics': result.hasEnrolledBiometrics,
+          'availableBiometrics': result.availableBiometrics
+              ?.map((e) => e?.name)
+              .toList(),
+          'reason': result.reason,
+        }.toString(),
+      );
+
+      final response = {
         'success': true,
         'canAuthenticate': result.canAuthenticate ?? false,
         'hasEnrolledBiometrics': result.hasEnrolledBiometrics ?? false,
         // Filter null entries before mapping to avoid null strings in the list.
-        'availableBiometrics': result.availableBiometrics
+        'availableBiometrics':
+            result.availableBiometrics
                 ?.where((e) => e != null)
                 .map((e) => e!.name)
                 .toList() ??
             <String>[],
         'reason': result.reason,
       };
+
+      AppLogger.info('✅ BiometricService: Returning response: $response');
+      return response;
     } on PlatformException catch (e) {
-      AppLogger.error('Failed to check biometric availability', e);
+      AppLogger.error(
+        '❌ BiometricService: Failed to check biometric availability',
+        e,
+      );
       return {
         'success': false,
         'canAuthenticate': false,
@@ -156,7 +178,9 @@ class BiometricService {
       final effectiveAlias =
           keyAlias ?? await _getStoredKeyAlias() ?? _defaultKeyAlias;
 
-      AppLogger.info('Signing payload with biometric key (alias: $effectiveAlias)');
+      AppLogger.info(
+        'Signing payload with biometric key (alias: $effectiveAlias)',
+      );
 
       final result = await _biometric.createSignature(
         payload: payload,

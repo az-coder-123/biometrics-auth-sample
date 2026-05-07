@@ -135,13 +135,22 @@ export function BiometricProvider({ children }: { children: ReactNode }) {
    * Safe to call from any context — silently returns when not in native app.
    */
   const refreshStatus = useCallback(async () => {
-    if (!isNativeApp()) return;
+    console.log('[BiometricContext] refreshStatus called');
+    
+    if (!isNativeApp()) {
+      console.log('[BiometricContext] Not in native app, skipping refresh');
+      return;
+    }
 
+    console.log('[BiometricContext] Starting biometric availability check...');
+    
     try {
       const [available, keyStatus] = await Promise.all([
         BiometricBridge.checkAvailability(),
         BiometricBridge.keyExists(),
       ]);
+      
+      console.log('[BiometricContext] Got results:', { available, keyStatus });
 
       const biometrics = available.availableBiometrics ?? [];
       setAsyncState({

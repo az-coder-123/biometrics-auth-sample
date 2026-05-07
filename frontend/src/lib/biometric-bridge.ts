@@ -85,16 +85,21 @@ export interface KeyInfoResult {
  * `flutter_inappwebview` object onto `window`.
  */
 export function isNativeApp(): boolean {
-  const result = (
-    typeof window !== "undefined" &&
-    typeof window.flutter_inappwebview !== "undefined"
-  );
-  
-  if (typeof window !== "undefined" && !result) {
-    console.debug('[BiometricBridge] Not running in native app (flutter_inappwebview not found)');
+  if (typeof window === "undefined") {
+    console.debug('[BiometricBridge] SSR context - window is undefined');
+    return false;
   }
   
-  return result;
+  const hasFlutterBridge = typeof window.flutter_inappwebview !== "undefined";
+  
+  console.debug('[BiometricBridge] isNativeApp check:', {
+    hasFlutterBridge,
+    bridgeObject: window.flutter_inappwebview ? 'exists' : 'missing',
+    callHandler: window.flutter_inappwebview?.callHandler ? 'exists' : 'missing',
+    platformReady: window.flutter_inappwebview?._platformReady ?? 'not set'
+  });
+  
+  return hasFlutterBridge;
 }
 
 const BRIDGE_READY_EVENT = "flutterInAppWebViewPlatformReady";
@@ -121,14 +126,30 @@ export function isBridgeReady(): boolean {
  * @param timeoutMs - Maximum time to wait (default: 3000ms)
  */
 export function waitForBridgeReady(timeoutMs: number = 3000): Promise<void> {
-  if (typeof window === "undefined") return Promise.resolve();
-  if (isBridgeReady()) return Promise.resolve();
-  if (bridgeReadyPromise) return bridgeReadyPromise;
+  console.log('[BiometricBridge] waitForBridgeReady called');
+  
+  if (typeof window === "undefined") {
+    console.log('[BiometricBridge] SSR - resolving immediately');
+    return Promise.resolve();
+  }
+  
+  if (isBridgeReady()) {
+    console.log('[BiometricBridge] Bridge already ready');
+    return Promise.resolve();
+  }
+  
+  if (bridgeReadyPromise) {
+    console.log('[BiometricBridge] Returning existing promise');
+    return bridgeReadyPromise;
+  }
 
+  console.log('[BiometricBridge] Starting to wait for bridge ready event...');
+  
   bridgeReadyPromise = new Promise((resolve) => {
     let timerId: number | null = null;
 
     const onReady = () => {
+      console.log('[BiometricBridge] ✅ Platform ready event received!');
       bridgeReady = true;
       cleanup();
       resolve();
@@ -149,8 +170,17 @@ export function waitForBridgeReady(timeoutMs: number = 3000): Promise<void> {
     const checkBridge = () => {
       checkCount++;
       
-      if (window.flutter_inappwebview?.callHandler && 
-          window.flutter_inappwebview?._platformReady === true) {
+      const hasCallHandler = !!window.flutter_inappwebview?.callHandler;
+      const platformReady = window.flutter_inappwebview?._platformReady === true;
+      
+      console.log(`[BiometricBridge] Check ${checkCount}/${maxChecks}:`, {
+        hasCallHandler,
+        platformReady,
+        bridgeExists: !!window.flutter_inappwebview
+      });
+      
+      if (hasCallHandler && platformReady) {
+        console.log('[BiometricBridge] ✅ Bridge ready via polling!');
         bridgeReady = true;
         cleanup();
         resolve();
@@ -159,11 +189,11 @@ export function waitForBridgeReady(timeoutMs: number = 3000): Promise<void> {
       
       if (checkCount >= maxChecks) {
         // Final check before timeout
-        if (window.flutter_inappwebview?.callHandler) {
+        if (hasCallHandler) {
           bridgeReady = true;
-          console.warn('[BiometricBridge] Platform ready event not received, but bridge exists');
+          console.warn('[BiometricBridge] ⚠️ Platform ready event not received, but bridge exists - proceeding anyway');
         } else {
-          console.error('[BiometricBridge] Bridge not ready after timeout');
+          console.error('[BiometricBridge] ❌ Bridge not ready after timeout - no callHandler found!');
         }
         cleanup();
         resolve();
@@ -197,22 +227,37 @@ async function callHandler<T>(
   handlerName: string,
   ...args: unknown[]
 ): Promise<T> {
+  console.log(`[BiometricBridge] callHandler('${handlerName}') called with args:`, args);
+  
   if (!isNativeApp()) {
-    throw new Error(
-      `Cannot call '${handlerName}': not running inside the mobile app WebView.`,
-    );
+    const error = `Cannot call '${handlerName}': not running inside the mobile app WebView.`;
+    console.error(`[BiometricBridge] ${error}`);
+    throw new Error(error);
   }
 
+  console.log(`[BiometricBridge] Waiting for bridge ready before calling '${handlerName}'...`);
   await waitForBridgeReady();
 
   const bridge = window.flutter_inappwebview;
   if (!bridge?.callHandler) {
-    throw new Error(
-      `Cannot call '${handlerName}': native bridge is not ready.`,
-    );
+    const error = `Cannot call '${handlerName}': native bridge is not ready.`;
+    console.error(`[BiometricBridge] ${error}`, {
+      bridgeExists: !!bridge,
+      hasCallHandler: !!bridge?.callHandler
+    });
+    throw new Error(error);
   }
 
-  return bridge.callHandler(handlerName, ...args) as Promise<T>;
+  console.log(`[BiometricBridge] Calling native handler '${handlerName}'...`);
+  
+  try {
+    const result = await bridge.callHandler(handlerName, ...args) as Promise<T>;
+    console.log(`[BiometricBridge] ✅ Handler '${handlerName}' returned:`, result);
+    return result;
+  } catch (error) {
+    console.error(`[BiometricBridge] ❌ Handler '${handlerName}' failed:`, error);
+    throw error;
+  }
 }
 
 // ---------------------------------------------------------------------------
