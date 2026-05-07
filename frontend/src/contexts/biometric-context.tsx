@@ -41,8 +41,10 @@ interface BiometricState {
   canAuthenticate: boolean;
   /** Whether biometric keys have been registered on this device (native only). */
   isRegistered: boolean;
-  /** The type of biometric available, e.g. "fingerprint" (native only). */
+  /** The primary biometric type available, e.g. "fingerprint" | "face" | "iris" (native only). */
   biometricType: string | null;
+  /** All biometric types available on the device (native only). */
+  availableBiometrics: string[];
   /** True while the initial native availability check is in progress. */
   loading: boolean;
 }
@@ -107,6 +109,7 @@ export function BiometricProvider({ children }: { children: ReactNode }) {
     canAuthenticate: false,
     isRegistered: false,
     biometricType: null as string | null,
+    availableBiometrics: [] as string[],
   });
 
   const [loading, setLoading] = useState(false);
@@ -129,10 +132,12 @@ export function BiometricProvider({ children }: { children: ReactNode }) {
         BiometricBridge.keyExists(),
       ]);
 
+      const biometrics = available.availableBiometrics ?? [];
       setAsyncState({
         canAuthenticate: available.canAuthenticate,
         isRegistered: keyStatus.exists,
-        biometricType: available.availableBiometrics?.[0] ?? null,
+        biometricType: biometrics[0] ?? null,
+        availableBiometrics: biometrics,
       });
     } catch {
       // Keep current state on bridge error
@@ -293,6 +298,7 @@ export function BiometricProvider({ children }: { children: ReactNode }) {
       canAuthenticate: asyncState.canAuthenticate,
       isRegistered: asyncState.isRegistered,
       biometricType: asyncState.biometricType,
+      availableBiometrics: asyncState.availableBiometrics,
       loading,
       enableBiometric,
       loginWithBiometric,

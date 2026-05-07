@@ -13,6 +13,7 @@ import { useAuth } from "@/contexts/auth-context";
 import { useBiometric } from "@/contexts/biometric-context";
 import { biometricApi } from "@/lib/api-client";
 import { WEBAUTHN_CRED_IDS_PREFIX } from "@/lib/storage-keys";
+import { BiometricIcon, getBiometricLabel } from "@/lib/biometric-ui";
 import {
   authenticateWithBiometric,
   isWebAuthnSupported,
@@ -28,6 +29,7 @@ export default function LoginPage() {
     isNativeApp: isNative,
     canAuthenticate,
     isRegistered,
+    biometricType,
     loginWithBiometric,
   } = useBiometric();
 
@@ -259,20 +261,10 @@ export default function LoginPage() {
               disabled={isLoading}
               className="w-full flex items-center justify-center gap-3 py-2 px-4 border border-gray-300 rounded-lg shadow-sm bg-white text-sm font-medium text-gray-700 hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
             >
-              <svg
-                className="w-5 h-5"
-                fill="none"
-                viewBox="0 0 24 24"
-                strokeWidth={1.5}
-                stroke="currentColor"
-              >
-                <path
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                  d="M7.864 4.243A7.5 7.5 0 0 1 19.5 10.5c0 2.92-.556 5.709-1.568 8.268M5.742 6.364A7.465 7.465 0 0 0 4.5 10.5a48.667 48.667 0 0 0-1.474 8.25M12 18.75a48.22 48.22 0 0 0-4.272-8.25M12 18.75c1.886 0 3.69-.453 5.292-1.26M12 18.75a48.22 48.22 0 0 1 4.272-8.25M12 2.25c-2.376 0-4.558.67-6.428 1.826M12 2.25c2.376 0 4.558.67 6.428 1.826"
-                />
-              </svg>
-              {isNative ? "Biometric Login" : "WebAuthn Login"}
+              <BiometricIcon type={isNative ? biometricType : null} />
+              {isNative
+                ? getBiometricLabel(biometricType, "login")
+                : "WebAuthn Login"}
             </button>
           </>
         )}

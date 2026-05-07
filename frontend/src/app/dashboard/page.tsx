@@ -11,6 +11,7 @@
 import { useAuth } from "@/contexts/auth-context";
 import { useBiometric } from "@/contexts/biometric-context";
 import { biometricApi } from "@/lib/api-client";
+import { BiometricIcon, getBiometricLabel, getBiometricTypeName } from "@/lib/biometric-ui";
 import { WEBAUTHN_CRED_IDS_PREFIX } from "@/lib/storage-keys";
 import {
   generateRandomBuffer,
@@ -34,6 +35,7 @@ export default function DashboardPage() {
     isNativeApp: isNative,
     canAuthenticate,
     isRegistered,
+    biometricType,
     enableBiometric,
     disableBiometric,
   } = useBiometric();
@@ -273,9 +275,11 @@ export default function DashboardPage() {
               <p className="text-sm text-gray-600">
                 {biometricEnabled
                   ? isNative
-                    ? "Biometric authentication is enabled via your device’s secure hardware. You can sign in using your fingerprint or face recognition."
+                    ? `${getBiometricTypeName(biometricType)} authentication is enabled via your device’s secure hardware.`
                     : "WebAuthn biometric authentication is enabled. You can sign in using your browser’s platform authenticator."
-                  : "Register your biometric credential to enable quick sign-in with your fingerprint or face recognition."}
+                  : isNative
+                    ? `Register your ${getBiometricTypeName(biometricType).toLowerCase()} to enable quick sign-in.`
+                    : "Register your biometric credential to enable quick sign-in with your browser’s platform authenticator."}
               </p>
 
               <div className="flex gap-3">
@@ -285,20 +289,13 @@ export default function DashboardPage() {
                     disabled={isLoading}
                     className="inline-flex items-center gap-2 py-2 px-4 border border-transparent text-sm font-medium rounded-lg text-white bg-indigo-600 hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
                   >
-                    <svg
+                    <BiometricIcon
+                      type={isNative ? biometricType : null}
                       className="w-4 h-4"
-                      fill="none"
-                      viewBox="0 0 24 24"
-                      strokeWidth={1.5}
-                      stroke="currentColor"
-                    >
-                      <path
-                        strokeLinecap="round"
-                        strokeLinejoin="round"
-                        d="M7.864 4.243A7.5 7.5 0 0 1 19.5 10.5c0 2.92-.556 5.709-1.568 8.268M5.742 6.364A7.465 7.465 0 0 0 4.5 10.5a48.667 48.667 0 0 0-1.474 8.25"
-                      />
-                    </svg>
-                    {isLoading ? "Registering..." : "Enable Biometric Login"}
+                    />
+                    {isLoading
+                      ? "Registering..."
+                      : getBiometricLabel(isNative ? biometricType : null, "enable")}
                   </button>
                 ) : (
                   <button
@@ -306,7 +303,9 @@ export default function DashboardPage() {
                     disabled={isLoading}
                     className="inline-flex items-center gap-2 py-2 px-4 border border-red-300 text-sm font-medium rounded-lg text-red-600 bg-white hover:bg-red-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-red-500 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
                   >
-                    {isLoading ? "Removing..." : "Disable Biometric Login"}
+                    {isLoading
+                      ? "Removing..."
+                      : getBiometricLabel(isNative ? biometricType : null, "disable")}
                   </button>
                 )}
               </div>
@@ -316,9 +315,9 @@ export default function DashboardPage() {
                   <p className="text-xs text-indigo-700">
                     ✅{" "}
                     {isNative
-                      ? "Native biometric credential registered via secure hardware."
+                      ? `${getBiometricTypeName(biometricType)} credential registered via secure hardware.`
                       : "WebAuthn credential registered via platform authenticator."}{" "}
-                    {"You can now use the ‘Biometric Login’ button on the sign-in page."}
+                    {"You can now use the biometric login button on the sign-in page."}
                   </p>
                 </div>
               )}

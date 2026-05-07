@@ -14,10 +14,15 @@ import '../../../core/utils/logger.dart';
 /// and signatures are transmitted to the backend.
 ///
 /// All handler names and return value shapes match the contract documented in
-/// `BIOMETRIC_WEB_INTEGRATION_GUIDE.md`.
+/// `MOBILE_FRONTEND_INTEGRATION.md`.
 class BiometricService {
   static final BiometricSignature _biometric = BiometricSignature();
   static final FlutterSecureStorage _storage = FlutterSecureStorage();
+
+  /// The key alias used when the caller passes null.
+  /// Must be stable across app sessions so signing can find the key.
+  static const String _defaultKeyAlias =
+      '${AppConfig.biometricKeyAliasPrefix}default';
 
   // ===========================================================================
   // Availability
@@ -27,7 +32,7 @@ class BiometricService {
   ///
   /// Returns:
   /// ```json
-  /// { "canAuthenticate": true, "hasEnrolledBiometrics": true,
+  /// { "success": true, "canAuthenticate": true, "hasEnrolledBiometrics": true,
   ///   "availableBiometrics": ["fingerprint"], "reason": null }
   /// ```
   Future<Map<String, dynamic>> checkAvailability() async {
@@ -37,8 +42,12 @@ class BiometricService {
         'success': true,
         'canAuthenticate': result.canAuthenticate ?? false,
         'hasEnrolledBiometrics': result.hasEnrolledBiometrics ?? false,
-        'availableBiometrics':
-            result.availableBiometrics?.map((e) => e?.name).toList() ?? [],
+        // Filter null entries before mapping to avoid null strings in the list.
+        'availableBiometrics': result.availableBiometrics
+                ?.where((e) => e != null)
+                .map((e) => e!.name)
+                .toList() ??
+            <String>[],
         'reason': result.reason,
       };
     } on PlatformException catch (e) {
@@ -59,24 +68,26 @@ class BiometricService {
 
   /// Creates a new biometric-backed key pair on the device.
   ///
-  /// [keyAlias] - Optional alias (null = default).
+  /// [keyAlias] - Optional alias. When null, [_defaultKeyAlias] is used so
+  ///              the same key can be found later during signing.
   /// [promptMessage] - Prompt shown during biometric authentication.
   ///
   /// Returns:
   /// ```json
-  /// { "success": true, "publicKey": "MFkwEwYHKo...", "keyAlias": null }
+  /// { "success": true, "publicKey": "MFkwEwYHKo...", "keyAlias": "biometrics_auth_default" }
   /// ```
   Future<Map<String, dynamic>> createKeyPair({
     String? keyAlias,
     String? promptMessage,
   }) async {
+    // Always resolve to a non-null alias so the key can be retrieved for signing.
+    final effectiveAlias = keyAlias ?? _defaultKeyAlias;
+
     try {
-      AppLogger.info(
-        'Creating biometric key pair (alias: ${keyAlias ?? "default"})',
-      );
+      AppLogger.info('Creating biometric key pair (alias: $effectiveAlias)');
 
       final result = await _biometric.createKeys(
-        keyAlias: keyAlias,
+        keyAlias: effectiveAlias,
         promptMessage: promptMessage ?? 'Authenticate to create signing keys',
       );
 
@@ -96,15 +107,19 @@ class BiometricService {
         };
       }
 
-      // Store mapping for this key alias
-      await _storeKeyAlias(keyAlias);
+      // Persist the alias and public key so they survive app restarts.
+      await _storeKeyAlias(effectiveAlias);
       await _storage.write(
         key: AppConfig.publicKeyStorageKey,
         value: publicKey,
       );
 
       AppLogger.info('Biometric key pair created successfully');
-      return {'success': true, 'publicKey': publicKey, 'keyAlias': keyAlias};
+      return {
+        'success': true,
+        'publicKey': publicKey,
+        'keyAlias': effectiveAlias,
+      };
     } on PlatformException catch (e) {
       AppLogger.error('Failed to create biometric key pair', e);
       return {
@@ -121,14 +136,15 @@ class BiometricService {
   /// Signs a payload using the biometric-backed private key.
   ///
   /// [payload] - The challenge nonce from the server.
-  /// [keyAlias] - Optional key alias (null = default).
+  /// [keyAlias] - Optional key alias. Falls back to the stored alias, then
+  ///              to [_defaultKeyAlias].
   /// [promptMessage] - Prompt shown during biometric authentication.
   ///
   /// Returns:
   /// ```json
   /// { "success": true, "authenticated": true, "signature": "MEUCI...",
   ///   "publicKey": "MFkwEw...", "payload": "challenge-nonce",
-  ///   "keyAlias": null, "ts": "2026-05-04T08:30:00.000Z" }
+  ///   "keyAlias": "biometrics_auth_default", "ts": "2026-05-07T..." }
   /// ```
   Future<Map<String, dynamic>> signPayload({
     required String payload,
@@ -136,23 +152,15 @@ class BiometricService {
     String? promptMessage,
   }) async {
     try {
-      // Resolve key alias from storage if not provided
-      keyAlias ??= await _getStoredKeyAlias();
+      // Resolve: explicit alias → stored alias → hard-coded default.
+      final effectiveAlias =
+          keyAlias ?? await _getStoredKeyAlias() ?? _defaultKeyAlias;
 
-      if (keyAlias == null) {
-        return {
-          'success': false,
-          'authenticated': false,
-          'error': 'Key not found',
-          'code': 'keyNotFound',
-        };
-      }
-
-      AppLogger.info('Signing payload with biometric key');
+      AppLogger.info('Signing payload with biometric key (alias: $effectiveAlias)');
 
       final result = await _biometric.createSignature(
         payload: payload,
-        keyAlias: keyAlias,
+        keyAlias: effectiveAlias,
         promptMessage: promptMessage ?? 'Authenticate to sign',
       );
 
@@ -184,7 +192,7 @@ class BiometricService {
         'signature': signature,
         'publicKey': publicKey ?? '',
         'payload': payload,
-        'keyAlias': keyAlias,
+        'keyAlias': effectiveAlias,
         'ts': DateTime.now().toUtc().toIso8601String(),
       };
     } on PlatformException catch (e) {
@@ -206,19 +214,17 @@ class BiometricService {
   /// Returns: `{ "exists": true, "keyAlias": "...", "valid": true }`
   Future<Map<String, dynamic>> keyExists({String? keyAlias}) async {
     try {
-      keyAlias ??= await _getStoredKeyAlias();
-      if (keyAlias == null) {
-        return {'exists': false, 'keyAlias': null, 'valid': false};
-      }
+      final effectiveAlias =
+          keyAlias ?? await _getStoredKeyAlias() ?? _defaultKeyAlias;
 
       final info = await _biometric.getKeyInfo(
-        keyAlias: keyAlias,
+        keyAlias: effectiveAlias,
         checkValidity: true,
       );
 
       return {
         'exists': info.exists ?? false,
-        'keyAlias': keyAlias,
+        'keyAlias': effectiveAlias,
         'valid': info.isValid ?? false,
       };
     } on PlatformException catch (e) {
@@ -232,19 +238,17 @@ class BiometricService {
   /// Returns: `{ "exists", "keyAlias", "valid", "publicKey", "algorithm", "keySize" }`
   Future<Map<String, dynamic>> getKeyInfo({String? keyAlias}) async {
     try {
-      keyAlias ??= await _getStoredKeyAlias();
-      if (keyAlias == null) {
-        return {'exists': false, 'keyAlias': null, 'valid': false};
-      }
+      final effectiveAlias =
+          keyAlias ?? await _getStoredKeyAlias() ?? _defaultKeyAlias;
 
       final info = await _biometric.getKeyInfo(
-        keyAlias: keyAlias,
+        keyAlias: effectiveAlias,
         checkValidity: true,
       );
 
       return {
         'exists': info.exists ?? false,
-        'keyAlias': keyAlias,
+        'keyAlias': effectiveAlias,
         'valid': info.isValid ?? false,
         'publicKey': info.publicKey,
         'algorithm': info.algorithm,
@@ -256,17 +260,18 @@ class BiometricService {
     }
   }
 
-  /// Deletes keys for a specific alias.
+  /// Deletes keys for a specific alias (defaults to the stored alias).
   Future<void> deleteKeys({String? keyAlias}) async {
     try {
-      keyAlias ??= await _getStoredKeyAlias();
-      if (keyAlias != null) {
-        await _biometric.deleteKeys(keyAlias: keyAlias);
-      }
-      await _clearKeyStorage();
-      AppLogger.info('Biometric keys deleted');
+      final effectiveAlias =
+          keyAlias ?? await _getStoredKeyAlias() ?? _defaultKeyAlias;
+      await _biometric.deleteKeys(keyAlias: effectiveAlias);
+      AppLogger.info('Biometric keys deleted (alias: $effectiveAlias)');
     } catch (e) {
       AppLogger.warning('Failed to delete keys: $e');
+    } finally {
+      // Always clear local storage even if the hardware delete failed.
+      await _clearKeyStorage();
     }
   }
 
@@ -274,10 +279,11 @@ class BiometricService {
   Future<void> deleteAllKeys() async {
     try {
       await _biometric.deleteAllKeys();
-      await _clearKeyStorage();
       AppLogger.info('All biometric keys deleted');
     } catch (e) {
       AppLogger.warning('Failed to delete all keys: $e');
+    } finally {
+      await _clearKeyStorage();
     }
   }
 
@@ -286,8 +292,6 @@ class BiometricService {
   // ===========================================================================
 
   /// Performs a simple biometric prompt without cryptographic operations.
-  ///
-  /// Useful for a quick identity verification without needing keys.
   Future<Map<String, dynamic>> simplePrompt({required String message}) async {
     try {
       final result = await _biometric.simplePrompt(promptMessage: message);
@@ -312,16 +316,14 @@ class BiometricService {
   // ===========================================================================
 
   /// Stores the key alias in secure storage.
-  Future<void> _storeKeyAlias(String? keyAlias) async {
-    if (keyAlias != null) {
-      await _storage.write(
-        key: AppConfig.credentialIdStorageKey,
-        value: keyAlias,
-      );
-    }
+  Future<void> _storeKeyAlias(String keyAlias) async {
+    await _storage.write(
+      key: AppConfig.credentialIdStorageKey,
+      value: keyAlias,
+    );
   }
 
-  /// Retrieves the stored key alias.
+  /// Retrieves the stored key alias (returns null if never set).
   Future<String?> _getStoredKeyAlias() async {
     return _storage.read(key: AppConfig.credentialIdStorageKey);
   }
