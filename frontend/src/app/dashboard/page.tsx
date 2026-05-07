@@ -18,14 +18,20 @@ import {
   registerBiometricCredential,
 } from "@/lib/webauthn";
 import { useRouter } from "next/navigation";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useSyncExternalStore, useState } from "react";
 
 /** Storage key prefix for persisted WebAuthn credential IDs per user. */
 const CREDENTIAL_STORAGE_PREFIX = "biometrics_cred_ids_";
 
+/** Subscribe to localStorage changes (cross-tab via storage event). */
+const subscribeToStorage = (callback: () => void) => {
+  window.addEventListener("storage", callback);
+  return () => window.removeEventListener("storage", callback);
+};
+
 export default function DashboardPage() {
   const router = useRouter();
-  const { isAuthenticated, accessToken, userId, email, logout } = useAuth();
+  const { isAuthenticated, isLoading: authLoading, accessToken, userId, email, logout } = useAuth();
   const {
     isNativeApp: isNative,
     canAuthenticate,
@@ -39,12 +45,12 @@ export default function DashboardPage() {
   const [error, setError] = useState("");
   const [isLoading, setIsLoading] = useState(false);
 
-  // Redirect to login if not authenticated
+  // Redirect to login if not authenticated (after auth state is resolved)
   useEffect(() => {
-    if (!isAuthenticated) {
+    if (!authLoading && !isAuthenticated) {
       router.push("/login");
     }
-  }, [isAuthenticated, router]);
+  }, [authLoading, isAuthenticated, router]);
 
   // Check WebAuthn availability (desktop browser only)
   useEffect(() => {
@@ -54,13 +60,18 @@ export default function DashboardPage() {
   }, [isNative]);
 
   // Check WebAuthn credential registration status (derived from localStorage)
-  const webAuthnRegistered = useMemo(() => {
-    if (isNative || !email) return false;
-    const stored = localStorage.getItem(`${CREDENTIAL_STORAGE_PREFIX}${email}`);
-    return !!stored;
-  }, [isNative, email]);
+  const storageKey = `${CREDENTIAL_STORAGE_PREFIX}${email ?? ""}`;
+  const webAuthnRegistered = useSyncExternalStore(
+    subscribeToStorage,
+    () => {
+      if (isNative || !email) return false;
+      return !!localStorage.getItem(storageKey);
+    },
+    () => false, // server snapshot
+  );
 
-  if (!isAuthenticated) {
+  // Show nothing while auth state is loading (matches server render)
+  if (authLoading || !isAuthenticated) {
     return null;
   }
 

@@ -6,6 +6,11 @@
  * Manages user authentication state (JWT token, user info) and
  * provides login/logout/register methods to child components.
  * Persists the token in localStorage for session persistence.
+ *
+ * Uses useSyncExternalStore to avoid hydration mismatches:
+ * - Server: returns a loading snapshot (isLoading: true)
+ * - Client hydration: also uses the server snapshot, so HTML matches
+ * - After hydration: reads from localStorage and updates
  */
 
 import { authApi } from "@/lib/api-client";
@@ -16,7 +21,7 @@ import {
   useCallback,
   useContext,
   useMemo,
-  useState,
+  useSyncExternalStore,
 } from "react";
 
 // ---------------------------------------------------------------------------
@@ -54,6 +59,77 @@ const USER_ID_KEY = "biometrics_auth_user_id";
 const EMAIL_KEY = "biometrics_auth_email";
 
 // ---------------------------------------------------------------------------
+// useSyncExternalStore for Auth State
+// ---------------------------------------------------------------------------
+
+/** Server snapshot — used during SSR and hydration to avoid mismatches. */
+const SERVER_SNAPSHOT: AuthState = {
+  isAuthenticated: false,
+  accessToken: null,
+  userId: null,
+  email: null,
+  isLoading: true,
+};
+
+/** Module-level cache for stable client snapshot references. */
+let _cacheKey = "";
+let _cachedSnapshot: AuthState = {
+  isAuthenticated: false,
+  accessToken: null,
+  userId: null,
+  email: null,
+  isLoading: false,
+};
+
+/** Reads auth state from localStorage (client-only). */
+function getSnapshot(): AuthState {
+  const token = localStorage.getItem(TOKEN_KEY);
+  const userId = localStorage.getItem(USER_ID_KEY);
+  const email = localStorage.getItem(EMAIL_KEY);
+
+  const key = `${token ?? ""}|${userId ?? ""}|${email ?? ""}`;
+  if (key !== _cacheKey) {
+    _cacheKey = key;
+    if (token && userId) {
+      _cachedSnapshot = {
+        isAuthenticated: true,
+        accessToken: token,
+        userId,
+        email,
+        isLoading: false,
+      };
+    } else {
+      _cachedSnapshot = {
+        isAuthenticated: false,
+        accessToken: null,
+        userId: null,
+        email: null,
+        isLoading: false,
+      };
+    }
+  }
+  return _cachedSnapshot;
+}
+
+/** Returns the server snapshot (no localStorage access). */
+function getServerSnapshot(): AuthState {
+  return SERVER_SNAPSHOT;
+}
+
+/**
+ * Subscribes to auth store changes.
+ * Listens to both cross-tab `storage` events and same-tab `auth-change` events.
+ */
+function subscribe(callback: () => void) {
+  window.addEventListener("storage", callback);
+  window.addEventListener("auth-change", callback);
+  return () => {
+    window.removeEventListener("storage", callback);
+    window.removeEventListener("auth-change", callback);
+  };
+}
+
+// ---------------------------------------------------------------------------
 // Provider
 // ---------------------------------------------------------------------------
 
@@ -63,44 +139,7 @@ const EMAIL_KEY = "biometrics_auth_email";
  * @param children - Child components that will have access to auth state
  */
 export function AuthProvider({ children }: { children: ReactNode }) {
-  // Lazily initialize state from localStorage (client-side only).
-  // This avoids the ESLint rule about calling setState in useEffect
-  // while still handling SSR correctly.
-  const [state, setState] = useState<AuthState>(() => {
-    // During SSR, return loading state — hydration will resolve on client
-    if (typeof window === "undefined") {
-      return {
-        isAuthenticated: false,
-        accessToken: null,
-        userId: null,
-        email: null,
-        isLoading: true,
-      };
-    }
-
-    // On client, read persisted credentials from localStorage
-    const token = localStorage.getItem(TOKEN_KEY);
-    const userId = localStorage.getItem(USER_ID_KEY);
-    const email = localStorage.getItem(EMAIL_KEY);
-
-    if (token && userId) {
-      return {
-        isAuthenticated: true,
-        accessToken: token,
-        userId,
-        email,
-        isLoading: false,
-      };
-    }
-
-    return {
-      isAuthenticated: false,
-      accessToken: null,
-      userId: null,
-      email: null,
-      isLoading: false,
-    };
-  });
+  const state = useSyncExternalStore(subscribe, getSnapshot, getServerSnapshot);
 
   /** Registers a new user and stores the resulting token. */
   const register = useCallback(async (data: RegisterRequest) => {
@@ -114,14 +153,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     localStorage.setItem(TOKEN_KEY, loginResult.accessToken);
     localStorage.setItem(USER_ID_KEY, loginResult.userId);
     localStorage.setItem(EMAIL_KEY, loginResult.email);
-
-    setState({
-      isAuthenticated: true,
-      accessToken: loginResult.accessToken,
-      userId: loginResult.userId,
-      email: loginResult.email,
-      isLoading: false,
-    });
+    window.dispatchEvent(new Event("auth-change"));
   }, []);
 
   /** Authenticates a user and stores the resulting token. */
@@ -131,14 +163,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     localStorage.setItem(TOKEN_KEY, result.accessToken);
     localStorage.setItem(USER_ID_KEY, result.userId);
     localStorage.setItem(EMAIL_KEY, result.email);
-
-    setState({
-      isAuthenticated: true,
-      accessToken: result.accessToken,
-      userId: result.userId,
-      email: result.email,
-      isLoading: false,
-    });
+    window.dispatchEvent(new Event("auth-change"));
   }, []);
 
   /** Stores a token from biometric verification into context and localStorage. */
@@ -147,14 +172,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       localStorage.setItem(TOKEN_KEY, data.accessToken);
       localStorage.setItem(USER_ID_KEY, data.userId);
       localStorage.setItem(EMAIL_KEY, data.email);
-
-      setState({
-        isAuthenticated: true,
-        accessToken: data.accessToken,
-        userId: data.userId,
-        email: data.email,
-        isLoading: false,
-      });
+      window.dispatchEvent(new Event("auth-change"));
     },
     [],
   );
@@ -164,19 +182,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     localStorage.removeItem(TOKEN_KEY);
     localStorage.removeItem(USER_ID_KEY);
     localStorage.removeItem(EMAIL_KEY);
-
-    setState({
-      isAuthenticated: false,
-      accessToken: null,
-      userId: null,
-      email: null,
-      isLoading: false,
-    });
+    window.dispatchEvent(new Event("auth-change"));
   }, []);
 
   const value = useMemo(
     () => ({ ...state, register, login, logout, setTokenFromBiometric }),
-    [state, register, login, logout, setTokenFromBiometric]
+    [state, register, login, logout, setTokenFromBiometric],
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
