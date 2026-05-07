@@ -14,6 +14,7 @@
  */
 
 import { authApi } from "@/lib/api-client";
+import { BiometricBridge, isNativeApp } from "@/lib/biometric-bridge";
 import { EMAIL_KEY, TOKEN_KEY, USER_ID_KEY } from "@/lib/storage-keys";
 import type { AuthState, LoginRequest, RegisterRequest } from "@/lib/types";
 import type { ReactNode } from "react";
@@ -147,6 +148,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     localStorage.setItem(USER_ID_KEY, loginResult.userId);
     localStorage.setItem(EMAIL_KEY, loginResult.email);
     window.dispatchEvent(new Event("auth-change"));
+    if (isNativeApp()) {
+      BiometricBridge.setCurrentUser(loginResult.userId).catch(() => {});
+    }
   }, []);
 
   /** Authenticates a user and stores the resulting token. */
@@ -157,6 +161,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     localStorage.setItem(USER_ID_KEY, result.userId);
     localStorage.setItem(EMAIL_KEY, result.email);
     window.dispatchEvent(new Event("auth-change"));
+    if (isNativeApp()) {
+      BiometricBridge.setCurrentUser(result.userId).catch(() => {});
+    }
   }, []);
 
   /** Stores a token from biometric verification into context and localStorage. */

@@ -239,6 +239,10 @@ export function BiometricProvider({ children }: { children: ReactNode }) {
         return { success: false, error: "Biometric not available on this device." };
       }
 
+      // Inform the native layer which user is being enrolled so the key and
+      // storage entries are scoped to this user from the start.
+      await BiometricBridge.setCurrentUser(userId);
+
       const keyStatus = await BiometricBridge.keyExists();
       if (keyStatus.exists) {
         await BiometricBridge.deleteKeys();
@@ -361,6 +365,9 @@ export function BiometricProvider({ children }: { children: ReactNode }) {
         userId: verifyResult.userId,
         email: verifyResult.email,
       });
+
+      // Sync native user context so subsequent operations use the correct key.
+      BiometricBridge.setCurrentUser(verifyResult.userId).catch(() => {});
 
       return {
         success: true,

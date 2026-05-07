@@ -356,4 +356,18 @@ export const BiometricBridge = {
       message,
     );
   },
+
+  /**
+   * Sets the active user context on the native side.
+   *
+   * Scopes all subsequent biometric key operations (create, sign, delete)
+   * to this user's keys. Call after every successful login — both password
+   * login and biometric login — so the native layer always knows which
+   * user's key to use on a shared device.
+   *
+   * @param userId - The authenticated user's ID
+   */
+  setCurrentUser(userId: string): Promise<{ success: boolean }> {
+    return callHandler<{ success: boolean }>("setCurrentUser", userId);
+  },
 } as const;

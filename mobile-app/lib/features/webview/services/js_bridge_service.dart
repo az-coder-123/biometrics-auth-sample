@@ -188,6 +188,24 @@ class JsBridgeService {
         return await _biometricService.simplePrompt(message: message);
       },
     );
+
+    // -----------------------------------------------------------------------
+    // setCurrentUser(userId)
+    // Scopes all subsequent biometric operations to this user's keys.
+    // Call after every successful login (password or biometric).
+    // Returns: { success }
+    // -----------------------------------------------------------------------
+    controller.addJavaScriptHandler(
+      handlerName: 'setCurrentUser',
+      callback: (args) async {
+        AppLogger.debug('JS Bridge: setCurrentUser($args)');
+        final userId = _positionalArg(args, 0) as String?;
+        if (userId != null && userId.isNotEmpty) {
+          await _biometricService.setCurrentUser(userId);
+        }
+        return {'success': true};
+      },
+    );
   }
 
   // ===========================================================================

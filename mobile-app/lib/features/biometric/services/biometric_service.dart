@@ -22,10 +22,71 @@ class BiometricService {
   static final LocalAuthentication _localAuth = LocalAuthentication();
   static final FlutterSecureStorage _storage = FlutterSecureStorage();
 
-  /// The key alias used when the caller passes null.
-  /// Must be stable across app sessions so signing can find the key.
+  /// Fallback alias when no user context is available (legacy / first install).
   static const String _defaultKeyAlias =
       '${AppConfig.biometricKeyAliasPrefix}default';
+
+  /// In-memory cache for the active user ID.
+  /// Populated lazily from [AppConfig.userIdStorageKey] on first use.
+  String? _cachedUserId;
+
+  // ===========================================================================
+  // User Context
+  // ===========================================================================
+
+  /// Sets the active user for all subsequent biometric operations.
+  ///
+  /// Call this after every successful login (password or biometric) so that
+  /// key creation and storage are scoped to the correct user. Persists the
+  /// value across app restarts via [AppConfig.userIdStorageKey].
+  Future<void> setCurrentUser(String userId) async {
+    _cachedUserId = userId;
+    await _storage.write(key: AppConfig.userIdStorageKey, value: userId);
+    AppLogger.info('BiometricService: current user → $userId');
+  }
+
+  /// Returns the active user ID, loading it from storage on first call.
+  Future<String?> _getCurrentUserId() async {
+    _cachedUserId ??= await _storage.read(key: AppConfig.userIdStorageKey);
+    return _cachedUserId;
+  }
+
+  // ===========================================================================
+  // Per-User Key Derivation
+  // ===========================================================================
+
+  String _aliasForUser(String userId) =>
+      '${AppConfig.biometricKeyAliasPrefix}$userId';
+
+  String _credentialIdKey(String userId) =>
+      '${AppConfig.credentialIdStorageKey}_$userId';
+
+  String _publicKeyKey(String userId) =>
+      '${AppConfig.publicKeyStorageKey}_$userId';
+
+  /// Resolves the alias to use when CREATING a new key pair.
+  ///
+  /// Priority: explicit caller alias → user-derived alias → legacy default.
+  /// Does NOT check stored alias — creation always targets the current user.
+  Future<String> _resolveAliasForCreate(String? explicit) async {
+    if (explicit != null) return explicit;
+    final userId = await _getCurrentUserId();
+    if (userId != null) return _aliasForUser(userId);
+    return _defaultKeyAlias;
+  }
+
+  /// Resolves the alias to use when LOOKING UP an existing key.
+  ///
+  /// Priority: explicit caller alias → stored alias (user-namespaced) →
+  ///           stored alias (legacy) → user-derived alias → legacy default.
+  Future<String> _resolveAliasForLookup(String? explicit) async {
+    if (explicit != null) return explicit;
+    final stored = await _getStoredKeyAlias();
+    if (stored != null) return stored;
+    final userId = await _getCurrentUserId();
+    if (userId != null) return _aliasForUser(userId);
+    return _defaultKeyAlias;
+  }
 
   // ===========================================================================
   // Availability
@@ -128,8 +189,9 @@ class BiometricService {
 
   /// Creates a new biometric-backed key pair on the device.
   ///
-  /// [keyAlias] - Optional alias. When null, [_defaultKeyAlias] is used so
-  ///              the same key can be found later during signing.
+  /// [keyAlias] - Optional alias. When null, the current user's alias
+  ///              (`biometrics_auth_{userId}`) is used, falling back to
+  ///              [_defaultKeyAlias] if no user context is set.
   /// [promptMessage] - Prompt shown during biometric authentication.
   ///
   /// IMPORTANT: This method first authenticates the user with biometric to
@@ -137,14 +199,13 @@ class BiometricService {
   ///
   /// Returns:
   /// ```json
-  /// { "success": true, "publicKey": "MFkwEwYHKo...", "keyAlias": "biometrics_auth_default" }
+  /// { "success": true, "publicKey": "MFkwEwYHKo...", "keyAlias": "biometrics_auth_{userId}" }
   /// ```
   Future<Map<String, dynamic>> createKeyPair({
     String? keyAlias,
     String? promptMessage,
   }) async {
-    // Always resolve to a non-null alias so the key can be retrieved for signing.
-    final effectiveAlias = keyAlias ?? _defaultKeyAlias;
+    final effectiveAlias = await _resolveAliasForCreate(keyAlias);
 
     try {
       // STEP 1: Authenticate user BEFORE creating keys to verify they can use biometric
@@ -192,12 +253,9 @@ class BiometricService {
         };
       }
 
-      // Persist the alias and public key so they survive app restarts.
+      // Persist alias and public key scoped to the current user.
       await _storeKeyAlias(effectiveAlias);
-      await _storage.write(
-        key: AppConfig.publicKeyStorageKey,
-        value: publicKey,
-      );
+      await _storePublicKey(publicKey);
 
       AppLogger.info('Biometric key pair created successfully');
       return {
@@ -221,15 +279,15 @@ class BiometricService {
   /// Signs a payload using the biometric-backed private key.
   ///
   /// [payload] - The challenge nonce from the server.
-  /// [keyAlias] - Optional key alias. Falls back to the stored alias, then
-  ///              to [_defaultKeyAlias].
+  /// [keyAlias] - Optional key alias. Falls back to the stored alias for the
+  ///              current user, then the user-derived alias, then the default.
   /// [promptMessage] - Prompt shown during biometric authentication.
   ///
   /// Returns:
   /// ```json
   /// { "success": true, "authenticated": true, "signature": "MEUCI...",
   ///   "publicKey": "MFkwEw...", "payload": "challenge-nonce",
-  ///   "keyAlias": "biometrics_auth_default", "ts": "2026-05-07T..." }
+  ///   "keyAlias": "biometrics_auth_{userId}", "ts": "2026-05-07T..." }
   /// ```
   Future<Map<String, dynamic>> signPayload({
     required String payload,
@@ -237,9 +295,7 @@ class BiometricService {
     String? promptMessage,
   }) async {
     try {
-      // Resolve: explicit alias → stored alias → hard-coded default.
-      final effectiveAlias =
-          keyAlias ?? await _getStoredKeyAlias() ?? _defaultKeyAlias;
+      final effectiveAlias = await _resolveAliasForLookup(keyAlias);
 
       AppLogger.info(
         'Signing payload with biometric key (alias: $effectiveAlias)',
@@ -269,7 +325,7 @@ class BiometricService {
         };
       }
 
-      final publicKey = await _storage.read(key: AppConfig.publicKeyStorageKey);
+      final publicKey = await _readPublicKey();
 
       AppLogger.info('Payload signed successfully');
 
@@ -301,8 +357,7 @@ class BiometricService {
   /// Returns: `{ "exists": true, "keyAlias": "...", "valid": true }`
   Future<Map<String, dynamic>> keyExists({String? keyAlias}) async {
     try {
-      final effectiveAlias =
-          keyAlias ?? await _getStoredKeyAlias() ?? _defaultKeyAlias;
+      final effectiveAlias = await _resolveAliasForLookup(keyAlias);
 
       final info = await _biometric.getKeyInfo(
         keyAlias: effectiveAlias,
@@ -325,8 +380,7 @@ class BiometricService {
   /// Returns: `{ "exists", "keyAlias", "valid", "publicKey", "algorithm", "keySize" }`
   Future<Map<String, dynamic>> getKeyInfo({String? keyAlias}) async {
     try {
-      final effectiveAlias =
-          keyAlias ?? await _getStoredKeyAlias() ?? _defaultKeyAlias;
+      final effectiveAlias = await _resolveAliasForLookup(keyAlias);
 
       final info = await _biometric.getKeyInfo(
         keyAlias: effectiveAlias,
@@ -350,8 +404,7 @@ class BiometricService {
   /// Deletes keys for a specific alias (defaults to the stored alias).
   Future<void> deleteKeys({String? keyAlias}) async {
     try {
-      final effectiveAlias =
-          keyAlias ?? await _getStoredKeyAlias() ?? _defaultKeyAlias;
+      final effectiveAlias = await _resolveAliasForLookup(keyAlias);
       await _biometric.deleteKeys(keyAlias: effectiveAlias);
       AppLogger.info('Biometric keys deleted (alias: $effectiveAlias)');
     } catch (e) {
@@ -402,21 +455,61 @@ class BiometricService {
   // Secure Storage Helpers
   // ===========================================================================
 
-  /// Stores the key alias in secure storage.
+  /// Stores the key alias scoped to the current user.
+  /// Falls back to the non-namespaced key when no user context is set.
   Future<void> _storeKeyAlias(String keyAlias) async {
-    await _storage.write(
-      key: AppConfig.credentialIdStorageKey,
-      value: keyAlias,
-    );
+    final userId = await _getCurrentUserId();
+    final storageKey = userId != null
+        ? _credentialIdKey(userId)
+        : AppConfig.credentialIdStorageKey;
+    await _storage.write(key: storageKey, value: keyAlias);
   }
 
-  /// Retrieves the stored key alias (returns null if never set).
+  /// Stores the public key scoped to the current user.
+  /// Falls back to the non-namespaced key when no user context is set.
+  Future<void> _storePublicKey(String publicKey) async {
+    final userId = await _getCurrentUserId();
+    final storageKey = userId != null
+        ? _publicKeyKey(userId)
+        : AppConfig.publicKeyStorageKey;
+    await _storage.write(key: storageKey, value: publicKey);
+  }
+
+  /// Reads the stored key alias for the current user.
+  ///
+  /// Checks the user-namespaced key first, then falls back to the legacy
+  /// non-namespaced key so existing enrollments continue to work after upgrade.
   Future<String?> _getStoredKeyAlias() async {
+    final userId = await _getCurrentUserId();
+    if (userId != null) {
+      final namespaced = await _storage.read(key: _credentialIdKey(userId));
+      if (namespaced != null) return namespaced;
+    }
+    // Legacy fallback for users enrolled before per-user namespacing.
     return _storage.read(key: AppConfig.credentialIdStorageKey);
   }
 
-  /// Clears key-related storage entries.
+  /// Reads the stored public key for the current user.
+  ///
+  /// Checks the user-namespaced key first, then falls back to the legacy key.
+  Future<String?> _readPublicKey() async {
+    final userId = await _getCurrentUserId();
+    if (userId != null) {
+      final namespaced = await _storage.read(key: _publicKeyKey(userId));
+      if (namespaced != null) return namespaced;
+    }
+    return _storage.read(key: AppConfig.publicKeyStorageKey);
+  }
+
+  /// Clears key-related storage entries for the current user.
+  /// Also clears legacy (non-namespaced) keys to clean up old data.
   Future<void> _clearKeyStorage() async {
+    final userId = await _getCurrentUserId();
+    if (userId != null) {
+      await _storage.delete(key: _credentialIdKey(userId));
+      await _storage.delete(key: _publicKeyKey(userId));
+    }
+    // Always clear legacy keys to avoid stale entries.
     await _storage.delete(key: AppConfig.credentialIdStorageKey);
     await _storage.delete(key: AppConfig.publicKeyStorageKey);
   }
