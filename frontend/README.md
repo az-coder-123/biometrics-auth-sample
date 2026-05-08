@@ -1,36 +1,178 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Biometrics Auth — Frontend (Next.js)
 
-## Getting Started
+Web frontend for the biometric authentication system, built with **Next.js 16**, **React 19**, and **TypeScript**. Serves as both a standalone desktop WebAuthn client and the embedded UI for the Flutter mobile app via WebView.
 
-First, run the development server:
+## 📐 Architecture
+
+The frontend operates in **two modes**:
+
+1. **Desktop Browser** — Uses the **WebAuthn API** directly for hardware-backed authentication (Windows Hello, Touch ID, security keys)
+2. **Mobile WebView** — Communicates with the Flutter app's native biometric services through a **JavaScript bridge** (`BiometricBridge`)
+
+```
+┌─────────────────────────────────────────────────────────┐
+│                    Next.js Frontend                     │
+│                                                         │
+│  ┌──────────────┐  ┌──────────────┐  ┌───────────────┐  │
+│  │ AuthContext  │  │ Biometric    │  │ API Client    │  │
+│  │ (login/      │  │ Context      │  │ (fetch wrapper│  │
+│  │  register/   │  │ (state mgmt) │  │  + error      │  │
+│  │  logout)     │  │              │  │  handling)    │  │
+│  └──────────────┘  └──────┬───────┘  └───────┬───────┘  │
+│                           │                  │          │
+│              ┌────────────┼───────────┐      │          │
+│              │            │           │      │          │
+│        ┌─────▼─────┐ ┌───▼────┐ ┌───▼───┐    │          │
+│        │ WebAuthn  │ │ Bridge │ │ UI    │    │          │
+│        │ (desktop) │ │(mobile)│ │ comps │    │          │
+│        └───────────┘ └────────┘ └───────┘    │          │
+└──────────────────────────────────────────────┼──────────┘
+                                               │ HTTP/REST
+                                               ▼
+                                    ┌─────────────────────┐
+                                    │  NestJS Backend     │
+                                    │  (MongoDB + JWT)    │
+                                    └─────────────────────┘
+```
+
+## 🚀 Getting Started
+
+### Prerequisites
+
+- **Node.js** 20+
+- Running **NestJS backend** server (see root README)
+
+### 1. Install Dependencies
+
+```bash
+cd frontend
+npm install
+```
+
+### 2. Development Server
 
 ```bash
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Opens on [http://localhost:3001](http://localhost:3001).
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+### 3. Production Build
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+> **Note**: WebAuthn requires HTTPS in production. Use a valid TLS certificate or a reverse proxy.
 
-## Learn More
+```bash
+npm run build
+npm start
+```
 
-To learn more about Next.js, take a look at the following resources:
+### 4. Expose to Mobile App (Optional)
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+To connect the Flutter mobile app, expose the frontend via a tunnel:
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+```bash
+# Using ngrok
+ngrok http 3001
 
-## Deploy on Vercel
+# Using Cloudflare Tunnel
+cloudflared tunnel --url http://localhost:3001
+```
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+Update `WEB_APP_URL` in the mobile app's `.env` file with the tunnel URL.
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+## 📁 Project Structure
+
+```
+src/
+├── app/                              # Next.js App Router pages
+│   ├── layout.tsx                    # Root layout with providers
+│   ├── page.tsx                      # Home / redirect page
+│   ├── login/page.tsx                # Login page (password + biometric)
+│   ├── register/page.tsx             # Registration page
+│   └── dashboard/page.tsx            # Protected dashboard (auth required)
+│
+├── contexts/                         # React Context providers
+│   ├── auth-context.tsx              # Auth state: login, register, logout, JWT
+│   └── biometric-context.tsx         # Biometric state: register, verify, sync
+│
+├── lib/                              # Core libraries and utilities
+│   ├── api-client.ts                 # Typed HTTP client with auth headers
+│   ├── biometric-bridge.ts           # JS bridge for Flutter WebView communication
+│   ├── biometric-ui.tsx              # Biometric UI components (enable/disable/login)
+│   ├── webauthn.ts                   # WebAuthn API wrapper (desktop browser)
+│   ├── storage-keys.ts               # Secure storage key constants
+│   └── types.ts                      # Shared TypeScript type definitions
+│
+└── types/                            # External type declarations
+    └── flutter-inappwebview.d.ts     # InAppWebView JS bridge type definitions
+```
+
+## 🛠️ Tech Stack
+
+| Technology | Version | Purpose |
+|-----------|---------|---------|
+| **Next.js** | 16 | React framework with App Router |
+| **React** | 19 | UI library |
+| **TypeScript** | 5 | Type safety |
+| **Tailwind CSS** | 4 | Utility-first styling |
+
+## 🔑 Key Modules
+
+### API Client (`lib/api-client.ts`)
+
+Typed HTTP client for backend communication:
+
+- `authApi.register()` / `authApi.login()` / `authApi.getProfile()`
+- `biometricApi.checkNativeCredential()` / `biometricApi.registerCredential()`
+- `biometricApi.generateChallenge()` / `biometricApi.verifySignature()`
+- `biometricApi.unregisterCredential()`
+
+Handles Bearer token auth, JSON serialization, and the backend's `{ success, data, timestamp }` response envelope.
+
+### Biometric Bridge (`lib/biometric-bridge.ts`)
+
+JavaScript bridge for Flutter WebView communication:
+
+- `isNativeApp()` — Detects mobile WebView environment
+- `biometricBridge.createKeys()` / `biometricBridge.signChallenge()`
+- `biometricBridge.biometricAvailable()` / `biometricBridge.deleteKey()`
+
+Automatically falls back gracefully when not running inside a mobile app.
+
+### WebAuthn (`lib/webauthn.ts`)
+
+WebAuthn API wrapper for desktop browsers:
+
+- Registration and authentication via platform authenticators
+- Supports Windows Hello, macOS Touch ID, and hardware security keys
+
+### Contexts
+
+| Context | Purpose |
+|---------|---------|
+| `AuthContext` | Manages user authentication state (login, register, logout), JWT token storage, and profile data |
+| `BiometricContext` | Manages biometric credential state (register, verify, check), multi-user sync, and platform detection |
+
+## 🔐 Security
+
+- **WebAuthn** requires HTTPS (except `localhost`) — see [WebAuthn Secure Context](../docs/WEBAUTHN_SECURE_CONTEXT.md)
+- **JWT tokens** stored in localStorage (consider httpOnly cookies for production)
+- **Biometric keys** never leave the device — only signatures are transmitted
+- **Challenge-response** pattern prevents replay attacks
+
+## 📖 Documentation
+
+| Document | Description |
+|----------|-------------|
+| [Frontend ↔ Backend Communication](../docs/FRONTEND_BACKEND_COMMUNICATION.md) | API reference and authentication flows |
+| [Mobile ↔ Frontend Integration](../docs/MOBILE_FRONTEND_INTEGRATION.md) | JavaScript bridge architecture and handler registry |
+| [WebAuthn Secure Context](../docs/WEBAUTHN_SECURE_CONTEXT.md) | HTTPS requirements and development setup |
+
+## 📜 Scripts
+
+| Command | Description |
+|---------|-------------|
+| `npm run dev` | Start development server on port 3001 |
+| `npm run build` | Create production build |
+| `npm run start` | Start production server |
+| `npm run lint` | Run ESLint checks |
