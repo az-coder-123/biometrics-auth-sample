@@ -1,6 +1,7 @@
 import 'dart:io';
 
 import 'package:flutter/material.dart';
+import 'package:flutter_dotenv/flutter_dotenv.dart';
 import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 
 import 'features/webview/pages/webview_page.dart';
@@ -13,6 +14,9 @@ import 'features/webview/pages/webview_page.dart';
 /// - Log forwarding from WebView to native logger
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
+
+  // Load environment variables from .env file.
+  await dotenv.load(fileName: '.env');
 
   // setWebContentsDebuggingEnabled is Android-only; skip on other platforms.
   if (Platform.isAndroid) {

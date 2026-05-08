@@ -23,6 +23,8 @@ dependencies:
   url_launcher: ^6.3.1
   # Logging
   logger: ^2.5.0
+  # Environment variables
+  flutter_dotenv: ^5.2.1
 
 dev_dependencies:
   flutter_test:

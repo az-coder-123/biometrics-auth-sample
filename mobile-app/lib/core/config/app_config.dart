@@ -1,34 +1,24 @@
+import 'package:flutter_dotenv/flutter_dotenv.dart';
+
 /// Application configuration constants.
 ///
 /// Centralizes all configurable values used throughout the app.
-/// Environment-specific values should be loaded from environment variables
-/// or build configurations in a production app.
+/// Environment-specific values are loaded from the `.env` file via
+/// `flutter_dotenv`. See `.env.example` for available variables.
 class AppConfig {
   // ---------------------------------------------------------------------------
   // WebView
   // ---------------------------------------------------------------------------
 
   /// Base URL for the web application loaded in the WebView.
-  static const String webAppUrl = String.fromEnvironment(
-    'WEB_APP_URL',
-    defaultValue: 'http://localhost:3001',
-  );
+  static String get webAppUrl =>
+      dotenv.env['WEB_APP_URL'] ?? 'http://localhost:3001';
 
   /// Initial route path for the WebView.
   static const String initialRoute = '/login';
 
   /// User agent suffix appended to the default WebView user agent.
   static const String userAgentSuffix = 'BiometricsAuthSample/1.0';
-
-  // ---------------------------------------------------------------------------
-  // API
-  // ---------------------------------------------------------------------------
-
-  /// Base URL for the backend API.
-  static const String apiBaseUrl = String.fromEnvironment(
-    'API_BASE_URL',
-    defaultValue: 'http://localhost:3000/api',
-  );
 
   // ---------------------------------------------------------------------------
   // Biometric
