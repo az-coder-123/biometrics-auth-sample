@@ -11,8 +11,7 @@ class AppConfig {
   /// Base URL for the web application loaded in the WebView.
   static const String webAppUrl = String.fromEnvironment(
     'WEB_APP_URL',
-    // defaultValue: 'http://localhost:3001',
-    defaultValue: 'https://mama-stardust-dismantle.ngrok-free.dev',
+    defaultValue: 'http://localhost:3001',
   );
 
   /// Initial route path for the WebView.
