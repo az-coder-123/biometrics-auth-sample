@@ -16,6 +16,60 @@ A complete **biometric authentication system** demonstrating hardware-backed cry
 
 ---
 
+## ✅ Tech Tasks
+
+> Checklist of technical tasks completed across all layers — useful for developers referencing or learning from this project.
+
+### Backend (NestJS + MongoDB)
+- [x] Scaffold NestJS project with TypeScript strict mode
+- [x] Integrate MongoDB via Mongoose ODM with schema validation
+- [x] Build REST API for user authentication (Register / Login / Profile)
+- [x] Implement JWT authentication with Passport.js strategy
+- [x] Create `User` and `BiometricCredential` schemas with indexes
+- [x] Implement challenge generation (random 32-byte nonce, 5-minute TTL)
+- [x] Implement RSA-SHA256 signature verification (native biometric)
+- [x] Implement ECDSA P-256 signature verification (WebAuthn)
+- [x] Add global exception filter for centralized error handling
+- [x] Add response transformer interceptor for consistent JSON format
+- [x] Add DTO validation with class-validator decorators
+- [x] Support multiple biometric credentials per user (multi-device)
+
+### Frontend (Next.js + React + TypeScript)
+- [x] Scaffold Next.js 15 App Router with React 19
+- [x] Implement authentication context (AuthContext) with login/register/logout
+- [x] Implement biometric context (BiometricContext) for state management
+- [x] Build API client with fetch wrapper and error handling
+- [x] Build BiometricBridge for JavaScript ↔ Flutter communication
+- [x] Implement WebAuthn registration and authentication flow
+- [x] Build biometric UI components (enable/disable/login buttons)
+- [x] Handle multi-user state sync on shared devices
+- [x] Add secure storage key management (storage-keys utility)
+- [x] Style with Tailwind CSS, responsive design
+- [x] Implement protected dashboard route with auth guard
+
+### Mobile App (Flutter)
+- [x] Scaffold Flutter project with clean architecture structure
+- [x] Implement BiometricService using `biometric_signature` + `local_auth`
+- [x] Generate RSA-2048 key pair in Android Keystore / iOS Secure Enclave
+- [x] Implement biometric prompt for registration and login
+- [x] Sign server challenges with hardware-backed private key
+- [x] Integrate `flutter_inappwebview` for WebView with JS bridge
+- [x] Build WebView-to-Flutter JavaScript bridge handlers
+- [x] Implement biometric credential registration flow
+- [x] Implement biometric login flow with challenge-response
+- [x] Configure app for Android 6.0+ and iOS 11.0+
+- [x] Handle biometric availability checks and error states
+
+### Security & DevOps
+- [x] Implement challenge-response pattern (replay attack prevention)
+- [x] Enforce single-use and time-limited challenges
+- [x] Store private keys exclusively in hardware-backed keystores
+- [x] Configure CORS for frontend-backend communication
+- [x] Add environment-based configuration (`.env` support)
+- [x] Write comprehensive documentation for authentication flows
+
+---
+
 ## 📐 Architecture
 
 ```
